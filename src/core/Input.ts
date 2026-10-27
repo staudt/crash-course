@@ -1,0 +1,60 @@
+import type { DriveInput } from './types';
+
+const KEYS = {
+  up: ['KeyW', 'ArrowUp'],
+  down: ['KeyS', 'ArrowDown'],
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
+  handbrake: ['Space'],
+};
+
+/** Keyboard (+ first gamepad) → DriveInput. One-shot actions are read with `consume`. */
+export class Input {
+  private readonly down = new Set<string>();
+  private readonly pressed = new Set<string>();
+
+  constructor(target: Window = window) {
+    target.addEventListener('keydown', (e) => {
+      if (e.repeat) return;
+      this.down.add(e.code);
+      this.pressed.add(e.code);
+      if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+    });
+    target.addEventListener('keyup', (e) => this.down.delete(e.code));
+    target.addEventListener('blur', () => this.down.clear());
+  }
+
+  /** True once per key press. */
+  consume(code: string): boolean {
+    return this.pressed.delete(code);
+  }
+
+  /** Call at the end of each frame so stale presses don't linger. */
+  endFrame(): void {
+    this.pressed.clear();
+  }
+
+  read(out: DriveInput): DriveInput {
+    const any = (codes: string[]) => codes.some((c) => this.down.has(c));
+    let throttle = (any(KEYS.up) ? 1 : 0) - (any(KEYS.down) ? 1 : 0);
+    let steer = (any(KEYS.right) ? 1 : 0) - (any(KEYS.left) ? 1 : 0);
+    let handbrake = any(KEYS.handbrake);
+
+    const pad = navigator.getGamepads?.()[0];
+    if (pad) {
+      const sx = pad.axes[0] ?? 0;
+      if (Math.abs(sx) > 0.12) steer = sx;
+      const rt = pad.buttons[7]?.value ?? 0;
+      const lt = pad.buttons[6]?.value ?? 0;
+      if (rt > 0.05 || lt > 0.05) throttle = rt - lt;
+      if (pad.buttons[0]?.pressed) handbrake = true;
+      if (pad.buttons[3]?.pressed) this.pressed.add('KeyR');
+    }
+
+    out.throttle = throttle;
+    out.steer = steer;
+    out.brake = 0;
+    out.handbrake = handbrake;
+    return out;
+  }
+}
