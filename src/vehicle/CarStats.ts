@@ -57,6 +57,11 @@ export interface CarStats {
   engineForce: number;
   reverseForce: number;
   topSpeed: number; // m/s, engine force fades to 0 approaching it
+  boostForce: number; // engine force multiplier while boosting (Shift)
+  boostTopSpeed: number; // top speed multiplier while boosting
+  boostDuration: number; // s of boosting to drain a full boost bar
+  boostRecharge: number; // s for an empty bar to refill while not boosting
+  boostRestart: number; // after running dry, boost unlocks again at this charge (0..1)
   brakeDecel: number; // m/s² at full brake
   handbrakeDecel: number; // m/s² extra slowdown while the handbrake is held
   rollingDecel: number; // m/s² coasting slowdown with no throttle
@@ -75,6 +80,11 @@ export interface CarStats {
   handbrakeGrip: number; // grip multiplier while handbraking
   gripRecovery: number; // per second, how fast grip returns after releasing the handbrake
   handbrakeYawRate: number; // rad/s body rotation at full steer while handbraking
+  spinCommit: number; // radians: releasing the handbrake with the car slid at least this far commits to a spin round to spinEnd
+  spinEnd: number; // radians of slide where a committed spin finishes (π = facing back the way it came)
+  spinMaxTurn: number; // radians: a handbrake spin (held or committed) stops forcing rotation once the car has turned this far since the press
+  handbrakeThrust: number; // fraction of engine force while the handbrake is held (locked rear wheels don't drive)
+  spinScrub: number; // m/s²: extra slowdown while handbraking/spinning, scaled by how sideways the car is sliding
   // Suspension
   suspensionRestLength: number;
   suspensionStiffness: number;
@@ -109,6 +119,11 @@ export const DEFAULT_STATS: Readonly<CarStats> = {
   engineForce: 13200,
   reverseForce: 6000,
   topSpeed: 126,
+  boostForce: 1.6,
+  boostTopSpeed: 1.25,
+  boostDuration: 7.5,
+  boostRecharge: 135,
+  boostRestart: 0.1,
   brakeDecel: 24,
   handbrakeDecel: 3,
   rollingDecel: 0.8,
@@ -125,6 +140,11 @@ export const DEFAULT_STATS: Readonly<CarStats> = {
   handbrakeGrip: 0.25,
   gripRecovery: 5,
   handbrakeYawRate: 4.5,
+  spinCommit: 0.87,
+  spinEnd: 2.97,
+  spinMaxTurn: 2.75,
+  handbrakeThrust: 0.25,
+  spinScrub: 7,
   suspensionRestLength: 0.38,
   suspensionStiffness: 28,
   suspensionCompression: 2.6,

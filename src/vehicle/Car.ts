@@ -71,6 +71,19 @@ export class Car {
   health: number;
   partsLost = 0;
   wrecked = false;
+  /** Boost bar 0..1: drains while boosting, recharges slowly otherwise. */
+  boostCharge = 1;
+  /** Ran dry: boost stays off until the bar recharges to stats.boostRestart. */
+  boostEmpty = false;
+  /** Boost active this step (held, throttle on, charge left). */
+  boosting = false;
+  /** Handbrake spin direction (+1 = nose swinging left), latched when the handbrake goes on. */
+  private spinDir = 0;
+  /** A spin carried on after the handbrake was released (see stats.spinCommit). */
+  private spinning = false;
+  private wasHandbraking = false;
+  /** How far (rad) the car has rotated in the spin direction since the handbrake went on. */
+  private spinTurned = 0;
 
   private readonly physics: Physics;
   private readonly events: CarEvents;
@@ -236,6 +249,7 @@ export class Car {
     for (let i = 0; i < 2; i++) if (!this.wheelLost[i]) c.setWheelSteering(i, this.steerAngle);
     c.updateVehicle(dt); // suspension + ground contact only
 
+    this.updateBoost(dt, inp);
     const ground = this.groundedWheels / 4;
     this.applySandDrag(dt);
     if (ground > 0) {
@@ -254,23 +268,40 @@ export class Car {
    * never uses up tyre grip, so throttle can't break traction. Mid-drift the nose points into the
    * turn, so throttle powers the car through the drift.
    */
+  /** Boost drains the bar while held with throttle; otherwise it recharges. Running dry locks it until boostRestart. */
+  private updateBoost(dt: number, inp: DriveInput): void {
+    const s = this.stats;
+    if (this.boostEmpty && this.boostCharge >= s.boostRestart) this.boostEmpty = false;
+    this.boosting = inp.boost && inp.throttle > 0 && !this.boostEmpty && !this.wrecked;
+    this.boostCharge += this.boosting ? -dt / s.boostDuration : dt / s.boostRecharge;
+    this.boostCharge = Math.min(1, Math.max(0, this.boostCharge));
+    if (this.boostCharge === 0) {
+      this.boostEmpty = true;
+      this.boosting = false;
+    }
+  }
+
   private applyDrive(dt: number, inp: DriveInput, vf: number, ground: number): void {
     const s = this.stats;
     const b = this.body;
     const m = b.mass();
-    const speedFrac = Math.min(1, Math.abs(vf) / s.topSpeed);
+    const top = s.topSpeed * (this.boosting ? s.boostTopSpeed : 1);
+    const engine = s.engineForce * (this.boosting ? s.boostForce : 1);
+    const speedFrac = Math.min(1, Math.abs(vf) / top);
     const healthFactor = 0.45 + 0.55 * Math.max(0, this.health / s.maxHealth);
 
     let thrust = 0; // N along the nose
     let brake = inp.brake; // 0..1 of brakeDecel, opposing motion
     if (inp.throttle > 0) {
       if (vf < -1) brake = Math.max(brake, inp.throttle);
-      else thrust = inp.throttle * s.engineForce * Math.max(0, 1 - speedFrac * speedFrac) * healthFactor;
+      else thrust = inp.throttle * engine * Math.max(0, 1 - speedFrac * speedFrac) * healthFactor;
     } else if (inp.throttle < 0) {
       if (vf > 1) brake = Math.max(brake, -inp.throttle);
       else if (vf > -s.topSpeed * 0.35) thrust = inp.throttle * s.reverseForce * healthFactor;
     }
 
+    // Locked rear wheels don't drive: the throttle can't power the car round in endless donuts.
+    if (inp.handbrake) thrust *= s.handbrakeThrust;
     const f = this.forwardOnPlane(_fwd);
     if (thrust !== 0) {
       const j = thrust * ground * dt;
@@ -330,6 +361,12 @@ export class Car {
       // Rotate the planar velocity about `up` by `turn`, keeping its length, then apply drift drag.
       const rotated = _r.copy(vp).applyAxisAngle(up, turn);
       rotated.multiplyScalar(Math.max(0, 1 - s.driftDrag * Math.abs(Math.sin(slip)) * dt));
+      // Sliding sideways with the rear locked (or mid-spin) scrubs speed hard.
+      if (inp.handbrake || this.spinning) {
+        const side = Math.abs(Math.sin(signedAngle(vp, nose, up)));
+        const len = rotated.length();
+        if (len > 1e-3) rotated.multiplyScalar(Math.max(0, len - s.spinScrub * ground * side * dt) / len);
+      }
       b.applyImpulse({ x: (rotated.x - vp.x) * m, y: (rotated.y - vp.y) * m, z: (rotated.z - vp.z) * m }, true);
     }
 
@@ -337,13 +374,38 @@ export class Car {
     const wheelbase = 2 * this.dims.wheelZ;
     let target = (vf * Math.tan(this.steerAngle)) / wheelbase;
     // Handbrake turns swing at a fixed rate from the steering input, independent of the (speed-reduced)
-    // steering lock, so they whip round at any speed.
-    if (inp.handbrake && inp.steer !== 0) target = -inp.steer * s.handbrakeYawRate * Math.min(1, Math.abs(vf) / 6) * Math.sign(vf || 1);
+    // steering lock, so they whip round at any speed. The swing is scaled by the speed over the ground
+    // (not along the nose, which falls to zero as the car turns sideways and used to stall it at 90°),
+    // and its direction is latched when the handbrake goes on (forward speed changes sign past 90°).
+    const spinRate = s.handbrakeYawRate * Math.min(1, sp / 6);
+    const travelSlip = sp < 0.5 ? 0 : Math.abs(signedAngle(vp, nose, up)); // 0 = going where it points, π = going backwards
+    if (inp.handbrake && !this.wasHandbraking) {
+      this.spinDir = 0;
+      this.spinTurned = 0;
+    }
+    const w0 = b.angvel();
+    if (this.spinDir !== 0) this.spinTurned += (w0.x * up.x + w0.y * up.y + w0.z * up.z) * this.spinDir * dt;
+    // About a half turn per press: past spinMaxTurn the handbrake stops forcing rotation and the car just slides.
+    const spinRoom = this.spinTurned < s.spinMaxTurn;
+    if (inp.handbrake && inp.steer !== 0) {
+      if (this.spinDir === 0) this.spinDir = -Math.sign(inp.steer) * Math.sign(vf || 1);
+      target = spinRoom ? this.spinDir * spinRate : 0;
+    }
+    // Let go after swinging past spinCommit: the momentum carries the car on round to spinEnd
+    // (a 180), unless the driver countersteers. A shorter flick settles into a normal drift.
+    if (this.wasHandbraking && !inp.handbrake && this.spinDir !== 0 && travelSlip >= s.spinCommit) this.spinning = true;
+    if (this.spinning) {
+      // Steering right (+) spins right (−yaw), so steer with the same sign as the spin is steering against it.
+      const counter = Math.abs(inp.steer) > 0.3 && Math.sign(inp.steer) === this.spinDir;
+      if (inp.handbrake || counter || travelSlip >= s.spinEnd || !spinRoom || sp < 2) this.spinning = false;
+      else target = this.spinDir * spinRate;
+    }
+    this.wasHandbraking = inp.handbrake;
     // Self-aligning: with the wheel centred, the nose only swings toward the direction of travel
     // (+slip = nose left of travel, so rotate right) while grip swings the travel toward the nose,
     // so they meet and the car runs straight. (Following pathRate here made them chase each other.)
     if (!inp.handbrake && Math.abs(inp.steer) < 0.1) target = -slip * s.selfAlign;
-    const maxSlip = inp.handbrake ? Math.PI : s.driftMaxSlip;
+    const maxSlip = inp.handbrake || this.spinning ? Math.PI : s.driftMaxSlip;
     if (slip > maxSlip && target > pathRate) target = pathRate;
     if (slip < -maxSlip && target < pathRate) target = pathRate;
     target = Math.max(-s.maxYawRate, Math.min(s.maxYawRate, target));

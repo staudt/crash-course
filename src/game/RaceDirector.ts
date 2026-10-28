@@ -225,7 +225,7 @@ export class RaceDirector {
     const race = this.player.race;
     const target = race.guidePoint(DIRECTOR_CONFIG.guideAhead, { x: 0, z: 0 });
     const bend = g.track.nextBend(race.s, DIRECTOR_CONFIG.bendLook, DIRECTOR_CONFIG.bendRadius);
-    const placement = g.rig.mode === 'chase' ? 'ahead' : 'edge';
+    const placement = g.rig.mode === 'fixed' ? 'edge' : 'top';
     this.arrow.update(dt, g.rig.camera, placement, g.rig.viewYaw, g.player.model.root.position, target, bend, (x, z) => g.terrain.heightAt(x, z));
 
     this.time += dt;

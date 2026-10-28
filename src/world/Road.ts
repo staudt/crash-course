@@ -33,6 +33,20 @@ export const ROAD_CONFIG = {
   sandCrestWindow: 30,
   /** Minimum softness on open-sand stretches (deep sand elsewhere stays deeper). */
   sandSoftness: 0.5,
+  /**
+   * Berms: a ridge of loose sand along both sides of the track, starting at the shoulder's edge,
+   * rising over `bermRise` m, flat for `bermCrest` m, falling over `bermFall` m. bermBase high
+   * everywhere, plus up to bermOutside on the outside of bends (full at |curvature| ≥ 1/bermFullRadius,
+   * curvature averaged over ±bermWindow m so the wall starts before the bend and runs past it).
+   */
+  bermBase: 0.8,
+  bermOutside: 3.2,
+  bermRise: 6,
+  bermCrest: 3,
+  bermFall: 10,
+  bermFullRadius: 70,
+  bermWindow: 35,
+  bermSoftness: 0.6,
 };
 
 /** Fills `path.elevation` from the natural (uncarved) terrain. Call before `carveRoad`. */
@@ -108,9 +122,10 @@ export function carveRoad(data: TerrainData, path: TrackPath): void {
   const inner = hw + ROAD_CONFIG.shoulder;
   const reach = inner + ROAD_CONFIG.bankMax + 2;
 
-  // Stamp every centreline segment into the grid, keeping each vertex's nearest road point.
+  // Stamp every centreline segment into the grid, keeping each vertex's nearest road point and side.
   const bestD = new Float32Array(n * n).fill(Infinity);
   const bestS = new Float32Array(n * n);
+  const bestSide = new Int8Array(n * n);
   for (let i = 0; i < path.count; i++) {
     const j = (i + 1) % path.count;
     const ax = path.xs[i]!;
@@ -132,23 +147,54 @@ export function carveRoad(data: TerrainData, path: TrackPath): void {
         if (d < bestD[v]!) {
           bestD[v] = d;
           bestS[v] = (i + t) * path.step;
+          // Left of travel is positive: cross product with the left normal (bz, -bx).
+          bestSide[v] = (x - ax) * bz - (z - az) * bx >= 0 ? 1 : -1;
         }
       }
     }
   }
 
+  const bendK = bendCurvature(path);
+  const c = ROAD_CONFIG;
   for (let v = 0; v < n * n; v++) {
     const d = bestD[v]!;
     if (d >= reach) continue;
-    const road = path.heightAt(bestS[v]!);
+    const s = bestS[v]!;
+    const road = path.heightAt(s);
     const natural = heights[v]!;
-    const bank = Math.min(ROAD_CONFIG.bankMax, ROAD_CONFIG.bankMin + ROAD_CONFIG.bankPerMetre * Math.abs(natural - road));
-    heights[v] = road + (natural - road) * smoothstep(inner, inner + bank, d);
+    const bank = Math.min(c.bankMax, c.bankMin + c.bankPerMetre * Math.abs(natural - road));
+    let h = road + (natural - road) * smoothstep(inner, inner + bank, d);
     // Packed road, or loose sand on open stretches; blending out to the natural sand beyond the edge.
-    const loose = Math.max(softness[v]!, ROAD_CONFIG.sandSoftness);
-    const track = ROAD_CONFIG.roadSoftness + (loose - ROAD_CONFIG.roadSoftness) * path.sandAt(bestS[v]!);
-    softness[v] = track + (softness[v]! - track) * smoothstep(hw, inner + 6, d);
+    const loose = Math.max(softness[v]!, c.sandSoftness);
+    const track = c.roadSoftness + (loose - c.roadSoftness) * path.sandAt(s);
+    let soft = track + (softness[v]! - track) * smoothstep(hw, inner + 6, d);
+
+    const k = sampleLoop(bendK, s / path.step);
+    const outside = bestSide[v]! * k < 0;
+    const height = c.bermBase + (outside ? c.bermOutside * Math.min(1, Math.abs(k) * c.bermFullRadius) : 0);
+    const top = inner + c.bermRise;
+    const berm = height * smoothstep(inner, top, d) * (1 - smoothstep(top + c.bermCrest, top + c.bermCrest + c.bermFall, d));
+    if (road + berm > h) {
+      h = road + berm;
+      soft = Math.max(soft, c.bermSoftness * Math.min(1, berm / Math.max(0.5, height * 0.5)));
+    }
+    heights[v] = h;
+    softness[v] = soft;
   }
+}
+
+/** Signed track curvature averaged around each sample, so berms build up before a bend and run past it. */
+export function bendCurvature(path: TrackPath): Float64Array {
+  const k = Float64Array.from(path.curvature);
+  smooth(k, Math.round(ROAD_CONFIG.bermWindow / path.step), 2);
+  return k;
+}
+
+function sampleLoop(a: Float64Array, u: number): number {
+  const n = a.length;
+  const i = ((Math.floor(u) % n) + n) % n;
+  const f = u - Math.floor(u);
+  return a[i]! + (a[(i + 1) % n]! - a[i]!) * f;
 }
 
 /** Circular box filter, `passes` times (≈ a gaussian). */

@@ -37,12 +37,32 @@ export const CHASE_CONFIG = {
   clearance: 1.2,
 };
 
-export type CameraMode = 'fixed' | 'chase';
+/** First person: the driver's eye, in car-local coordinates (+Z forward, +X left, +Y up). */
+export const COCKPIT_CONFIG = {
+  fov: 72,
+  speedFov: 10,
+  eye: new THREE.Vector3(0.32, 0.7, 0.05),
+  /** Slight look down over the hood (rad). */
+  pitch: 0.06,
+  /** How fast the view follows the car's rotation (1/s): filters suspension jitter, keeps the bumps. */
+  followRate: 14,
+};
 
-/** Follow camera: the fixed-orientation 3/4 overhead view, or a traditional chase view (C toggles). */
+export type CameraMode = 'chase' | 'cockpit' | 'fixed';
+
+/** The order C cycles through. */
+export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'cockpit', 'fixed'];
+
+const NEAR: Record<CameraMode, number> = { chase: 0.3, cockpit: 0.05, fixed: 1 };
+const _view = new THREE.Vector3();
+const _turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+const _pitch = new THREE.Quaternion();
+const _q = new THREE.Quaternion();
+
+/** Follow camera: a chase view behind the car (default), first person, or the fixed 3/4 overhead view. */
 export class CameraRig {
   readonly camera: THREE.PerspectiveCamera;
-  mode: CameraMode = 'fixed';
+  mode: CameraMode = 'chase';
   private readonly target = new THREE.Vector3();
   private distance = CAMERA_CONFIG.distance;
   private readonly tmp = new THREE.Vector3();
@@ -51,6 +71,8 @@ export class CameraRig {
   /** Chase view: smoothed yaw (car convention: 0 faces +Z) and camera height. */
   private chaseYaw = 0;
   private chaseY = 0;
+  /** Cockpit view: smoothed car rotation. */
+  private readonly cockpitRot = new THREE.Quaternion();
   private groundAt: (x: number, z: number) => number = () => -Infinity;
 
   constructor(aspect: number) {
@@ -66,9 +88,12 @@ export class CameraRig {
 
   /** Yaw the camera looks along on the ground plane (car convention: 0 faces +Z). */
   get viewYaw(): number {
-    if (this.mode === 'chase') return this.chaseYaw;
-    const d = CAMERA_CONFIG.direction;
-    return Math.atan2(-d.x, -d.z);
+    if (this.mode === 'fixed') {
+      const d = CAMERA_CONFIG.direction;
+      return Math.atan2(-d.x, -d.z);
+    }
+    this.camera.getWorldDirection(_view);
+    return Math.atan2(_view.x, _view.z);
   }
 
   /** Terrain height lookup, so the chase view never dips into a dune. */
@@ -78,16 +103,19 @@ export class CameraRig {
 
   setMode(mode: CameraMode): void {
     this.mode = mode;
-    this.camera.fov = mode === 'chase' ? CHASE_CONFIG.fov : CAMERA_CONFIG.fov;
+    this.camera.fov = mode === 'chase' ? CHASE_CONFIG.fov : mode === 'cockpit' ? COCKPIT_CONFIG.fov : CAMERA_CONFIG.fov;
+    this.camera.near = NEAR[mode];
     this.camera.updateProjectionMatrix();
   }
 
-  /** Jump straight to a position (and, for the chase view, behind `heading`) with no smoothing. */
-  snap(pos: THREE.Vector3, heading = this.chaseYaw): void {
+  /** Jump straight to a car pose (behind `heading` for the chase view, its rotation for the cockpit) with no smoothing. */
+  snap(pos: THREE.Vector3, heading: number, rot: THREE.Quaternion): void {
     this.target.copy(pos);
     this.chaseYaw = heading;
     this.chaseY = pos.y + CHASE_CONFIG.height;
+    this.cockpitRot.copy(rot);
     if (this.mode === 'chase') this.applyChase(pos, 0);
+    else if (this.mode === 'cockpit') this.applyCockpit(pos);
     else this.applyFixed();
   }
 
@@ -98,11 +126,18 @@ export class CameraRig {
     this.framing.lookZ = lookZ;
   }
 
-  /** `heading` is the car's yaw (0 faces +Z). */
-  update(dt: number, pos: THREE.Vector3, vel: THREE.Vector3, speedFraction: number, heading: number): void {
+  /** `heading` is the car's yaw (0 faces +Z), `rot` its rotation. */
+  update(dt: number, pos: THREE.Vector3, vel: THREE.Vector3, speedFraction: number, heading: number, rot: THREE.Quaternion): void {
     const sf = Math.min(1, Math.max(0, speedFraction));
     if (this.mode === 'chase') {
       this.updateChase(dt, pos, vel, sf, heading);
+      return;
+    }
+    if (this.mode === 'cockpit') {
+      this.cockpitRot.slerp(rot, 1 - Math.exp(-COCKPIT_CONFIG.followRate * dt));
+      this.camera.fov = COCKPIT_CONFIG.fov + COCKPIT_CONFIG.speedFov * sf;
+      this.camera.updateProjectionMatrix();
+      this.applyCockpit(pos);
       return;
     }
     const c = CAMERA_CONFIG;
@@ -155,6 +190,14 @@ export class CameraRig {
     const y = Math.max(this.chaseY, this.groundAt(x, z) + c.clearance);
     this.camera.position.set(x, y, z);
     this.camera.lookAt(pos.x + fx * c.lookAhead, pos.y + c.lookHeight, pos.z + fz * c.lookAhead);
+  }
+
+  /** At the driver's eye, looking out along the car's nose (a camera looks down its -Z, so turn it around). */
+  private applyCockpit(pos: THREE.Vector3): void {
+    const c = COCKPIT_CONFIG;
+    this.camera.position.copy(c.eye).applyQuaternion(this.cockpitRot).add(pos);
+    _pitch.setFromAxisAngle(_view.set(1, 0, 0), -c.pitch);
+    this.camera.quaternion.copy(_q.copy(this.cockpitRot).multiply(_turn).multiply(_pitch));
   }
 
   private applyFixed(): void {

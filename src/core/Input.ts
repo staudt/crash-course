@@ -6,6 +6,7 @@ const KEYS = {
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
   handbrake: ['Space'],
+  boost: ['ShiftLeft', 'ShiftRight'],
 };
 
 /** Keyboard (+ first gamepad) → DriveInput. One-shot actions are read with `consume`. */
@@ -39,6 +40,7 @@ export class Input {
     let throttle = (any(KEYS.up) ? 1 : 0) - (any(KEYS.down) ? 1 : 0);
     let steer = (any(KEYS.right) ? 1 : 0) - (any(KEYS.left) ? 1 : 0);
     let handbrake = any(KEYS.handbrake);
+    let boost = any(KEYS.boost);
 
     const pad = navigator.getGamepads?.()[0];
     if (pad) {
@@ -48,6 +50,7 @@ export class Input {
       const lt = pad.buttons[6]?.value ?? 0;
       if (rt > 0.05 || lt > 0.05) throttle = rt - lt;
       if (pad.buttons[0]?.pressed) handbrake = true;
+      if (pad.buttons[5]?.pressed) boost = true; // RB
       if (pad.buttons[3]?.pressed) this.pressed.add('KeyR');
     }
 
@@ -55,6 +58,7 @@ export class Input {
     out.steer = steer;
     out.brake = 0;
     out.handbrake = handbrake;
+    out.boost = boost;
     return out;
   }
 }

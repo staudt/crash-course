@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TrackPath } from '../race/TrackPath';
 import { DUNE_LOOP } from '../race/tracks';
-import { ROAD_CONFIG, buildElevation, carveRoad } from './Road';
+import { ROAD_CONFIG, bendCurvature, buildElevation, carveRoad } from './Road';
 import { generateTerrain, sampleHeight, sampleSoftness } from './TerrainData';
 
 describe('Road carving', () => {
@@ -75,6 +75,28 @@ describe('Road carving', () => {
     // Noticeably rougher than the road (0.002), but no sags that act like walls at 120 km/h.
     expect(rough).toBeGreaterThan(0.004);
     expect(rough).toBeLessThan(0.007);
+  });
+
+  it('berms line the track, tall on the outside of bends', () => {
+    const bendK = bendCurvature(path);
+    const q = { x: 0, z: 0 };
+    const t = { x: 0, z: 0 };
+    const at = (s: number, lateral: number) => {
+      path.pointAt(s, q);
+      path.tangentAt(s, t);
+      return sampleHeight(data, q.x + t.z * lateral, q.z - t.x * lateral) - path.heightAt(s);
+    };
+    const crest = path.halfWidth + ROAD_CONFIG.shoulder + ROAD_CONFIG.bermRise + 1;
+    for (const b of path.bends.filter((x) => x.radius <= 60)) {
+      const mid = (b.start + b.end) / 2;
+      const out = -Math.sign(bendK[Math.round(mid / path.step) % path.count]!);
+      // Outside wall at least ~2.5 m above the road; the inside only the base berm (or natural ground).
+      expect(at(mid, out * crest)).toBeGreaterThan(2.5);
+    }
+    // Every few hundred metres of straight: at least the base berm on both sides.
+    for (let s = 100; s < path.length; s += 400) {
+      for (const side of [-1, 1]) expect(at(s, side * crest)).toBeGreaterThan(ROAD_CONFIG.bermBase * 0.9);
+    }
   });
 
   it('road is firm, open sand loose, the far desert untouched', () => {

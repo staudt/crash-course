@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { CAMERA_CONFIG, CameraRig, type CameraMode } from '../core/CameraRig';
+import { CAMERA_CONFIG, CAMERA_MODES, CameraRig, type CameraMode } from '../core/CameraRig';
 import { Input } from '../core/Input';
 import { Physics } from '../core/Physics';
+import { BoostFlame } from '../fx/BoostFlame';
 import { Debris } from '../fx/Debris';
 import { Particles } from '../fx/Particles';
 import { TrackMarkings } from '../race/TrackMarkings';
@@ -35,13 +36,16 @@ export const GAME_CONFIG = {
 
 const _v = new THREE.Vector3();
 const _w = new THREE.Vector3();
+const _q = new THREE.Quaternion();
 
-const CAMERA_KEY = 'desert.camera';
+const CAMERA_KEY = 'desert.camera.v2';
+const CAMERA_NAMES: Record<CameraMode, string> = { chase: 'CHASE CAMERA', cockpit: 'COCKPIT CAMERA', fixed: 'OVERHEAD CAMERA' };
 function loadCameraMode(): CameraMode {
   try {
-    return localStorage.getItem(CAMERA_KEY) === 'chase' ? 'chase' : 'fixed';
+    const saved = localStorage.getItem(CAMERA_KEY);
+    return CAMERA_MODES.find((m) => m === saved) ?? 'chase';
   } catch {
-    return 'fixed';
+    return 'chase';
   }
 }
 function saveCameraMode(mode: CameraMode): void {
@@ -73,6 +77,7 @@ export class Game {
   player!: Car;
   readonly parked: Car[] = [];
   private readonly cars: Car[] = [];
+  private readonly flames = new Map<Car, BoostFlame>();
   private readonly carEvents: CarEvents;
   /** Terrain sand is soft per the softness map; rocks, cars and debris are firm. */
   private readonly surface: SurfaceFn = (ground, x, z) => (ground === this.terrain.collider ? this.terrain.softnessAt(x, z) : 0);
@@ -142,9 +147,12 @@ export class Game {
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
-  /** Jump the camera to the player (behind it, in the chase view), e.g. after a respawn. */
+  /** Jump the camera to the player (behind it, in the chase view), e.g. after a respawn. Reads the physics body, which may be ahead of the rendered model. */
   snapCamera(): void {
-    this.rig.snap(this.player.model.root.position, this.playerHeading());
+    const b = this.player.body;
+    const t = b.translation();
+    const r = b.rotation();
+    this.rig.snap(_w.set(t.x, t.y, t.z), this.playerHeading(), _q.set(r.x, r.y, r.z, r.w));
   }
 
   private playerHeading(): number {
@@ -164,10 +172,13 @@ export class Game {
     car.surface = this.surface;
     this.scene.add(car.model.root);
     this.cars.push(car);
+    this.flames.set(car, new BoostFlame(car.model.root));
     return car;
   }
 
   removeCar(car: Car): void {
+    this.flames.get(car)?.dispose();
+    this.flames.delete(car);
     car.dispose();
     const i = this.cars.indexOf(car);
     if (i >= 0) this.cars.splice(i, 1);
@@ -235,10 +246,17 @@ export class Game {
 
     const p = this.player;
     const lv = p.body.linvel();
-    this.rig.update(dt, p.model.root.position, _w.set(lv.x, lv.y, lv.z), p.speed / p.stats.topSpeed, this.playerHeading());
+    this.rig.update(dt, p.model.root.position, _w.set(lv.x, lv.y, lv.z), p.speed / p.stats.topSpeed, this.playerHeading(), p.model.root.quaternion);
     this.env.update(p.model.root.position);
     this.director.lateUpdate(dt);
-    this.hud.update({ speedKmh: Math.abs(p.forwardSpeed) * 3.6, health: p.health / p.stats.maxHealth, partsLost: p.partsLost });
+    this.hud.update({
+      speedKmh: Math.abs(p.forwardSpeed) * 3.6,
+      health: p.health / p.stats.maxHealth,
+      partsLost: p.partsLost,
+      boost: p.boostCharge,
+      boosting: p.boosting,
+      boostEmpty: p.boostEmpty,
+    });
     for (const fn of this.frameListeners) fn(dt);
 
     this.renderer.render(this.scene, this.rig.camera);
@@ -252,11 +270,11 @@ export class Game {
     if (this.input.consume('Enter')) this.director.restart();
     if (this.input.consume('KeyT')) this.director.restart(this.director.mode === 'race' ? 'timetrial' : 'race');
     if (this.input.consume('KeyC')) {
-      const mode: CameraMode = this.rig.mode === 'fixed' ? 'chase' : 'fixed';
+      const mode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.rig.mode) + 1) % CAMERA_MODES.length]!;
       this.rig.setMode(mode);
       this.snapCamera();
       saveCameraMode(mode);
-      this.raceHud.notify(mode === 'chase' ? 'CHASE CAMERA' : 'OVERHEAD CAMERA', '#ffffff');
+      this.raceHud.notify(CAMERA_NAMES[mode], '#ffffff');
     }
   }
 
@@ -280,6 +298,7 @@ export class Game {
         _v.set(0, 0.6, 1.4).applyQuaternion(car.model.root.quaternion).add(car.model.root.position);
         this.particles.emitSmoke(_v, damage);
       }
+      this.flames.get(car)?.update(dt, car.boosting);
     }
   }
 }

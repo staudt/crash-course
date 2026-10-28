@@ -156,10 +156,79 @@ describe('Car', () => {
       expect(pull.turned).toBeGreaterThan(Math.PI / 2);
     });
 
-    it('grip comes back after release: the car straightens out and drives on', () => {
-      const pull = handbrakeTurn(0.4);
+    it('grip comes back after a flick: the car straightens out and drives on', () => {
+      // 0.3 s: below spinCommit at release, so it settles into a drift instead of spinning round.
+      const pull = handbrakeTurn(0.3);
       expect(pull.slipAfter).toBeLessThan(0.05); // under ~3° within 2 s of centring the wheel
       expect(pull.speed).toBeGreaterThan(20); // and keeps going, not scrubbed to a halt
+    });
+
+    /** From 72 km/h, full right steer with the handbrake for `hb` s, then release and keep (or counter) steering. */
+    function spin(hb: number, afterSteer: number) {
+      const { spawn, run } = setup();
+      const car = spawn(0, 0);
+      run(1);
+      car.body.setLinvel({ x: 0, y: 0, z: 20 }, true);
+      run(1 / 6);
+      car.input.steer = 1;
+      car.input.handbrake = true;
+      run(hb);
+      const yaw = () => {
+        const f = car.forward(new THREE.Vector3());
+        return Math.abs(Math.atan2(f.x, f.z));
+      };
+      const atRelease = yaw();
+      car.input.handbrake = false;
+      car.input.steer = afterSteer;
+      let most = atRelease;
+      for (let i = 0; i < 90; i++) {
+        run(1 / 60);
+        most = Math.max(most, yaw());
+      }
+      return { atRelease, most, spinRate: Math.abs(car.body.angvel().y) };
+    }
+
+    it('one short press (~0.4 s) whips the car round to face back the way it came', () => {
+      const r = spin(0.42, 1);
+      expect(r.atRelease).toBeLessThan(Math.PI / 2); // released well before 90°...
+      expect(r.most).toBeGreaterThan((150 * Math.PI) / 180); // ...and it carried on round
+      expect(r.spinRate).toBeLessThan(1.5); // and the spin has ended, not a runaway donut
+    });
+
+    it('holding the handbrake keeps it rotating past 90° (no stall)', () => {
+      const r = spin(0.8, 1);
+      expect(r.atRelease).toBeGreaterThan((120 * Math.PI) / 180);
+    });
+
+    it('holding the handbrake with throttle gives about a half turn, not endless donuts', () => {
+      for (const kmh of [60, 120]) {
+        const { spawn, run } = setup();
+        const car = spawn(0, 0);
+        run(1);
+        car.body.setLinvel({ x: 0, y: 0, z: kmh / 3.6 }, true);
+        car.input.throttle = 0.8;
+        run(1 / 6);
+        car.input.steer = 1;
+        car.input.handbrake = true;
+        let total = 0;
+        let prev = 0;
+        for (let i = 0; i < 4 * 60; i++) {
+          run(1 / 60);
+          const f = car.forward(new THREE.Vector3());
+          const y = Math.atan2(f.x, f.z);
+          total += Math.atan2(Math.sin(y - prev), Math.cos(y - prev));
+          prev = y;
+        }
+        expect(Math.abs(total)).toBeGreaterThan((160 * Math.PI) / 180);
+        expect(Math.abs(total)).toBeLessThan((240 * Math.PI) / 180);
+        expect(car.speed).toBeLessThan(5); // scrubbed down, not orbiting
+      }
+    });
+
+    it('countersteering catches a committed spin', () => {
+      const carried = spin(0.42, 1);
+      const caught = spin(0.42, -1);
+      expect(caught.most).toBeLessThan(carried.most - 0.4);
     });
 
     it('spin rate stays capped on the ground', () => {
@@ -262,5 +331,62 @@ describe('Car', () => {
     run(1);
     // Either it's been auto-righted or it's sitting still — either way no steady damage.
     expect(car.health).toBeGreaterThanOrEqual(h - 1);
+  });
+});
+
+describe('boost bar', () => {
+  it('boost pulls harder and drains the bar; letting go recharges it slowly', () => {
+    const { spawn, run } = setup();
+    const plain = spawn(-20, 0);
+    const boosted = spawn(20, 0);
+    run(1);
+    expect(boosted.boostCharge).toBe(1);
+    plain.input.throttle = 1;
+    boosted.input.throttle = 1;
+    boosted.input.boost = true;
+    run(3);
+    expect(boosted.boosting).toBe(true);
+    expect(boosted.forwardSpeed).toBeGreaterThan(plain.forwardSpeed * 1.2);
+    expect(boosted.boostCharge).toBeCloseTo(1 - 3 / boosted.stats.boostDuration, 2);
+    expect(plain.boostCharge).toBe(1);
+    boosted.input.boost = false;
+    const drained = boosted.boostCharge;
+    run(3);
+    expect(boosted.boostCharge).toBeCloseTo(drained + 3 / boosted.stats.boostRecharge, 2);
+  });
+
+  it('needs throttle to boost', () => {
+    const { spawn, run } = setup();
+    const car = spawn(0, 0);
+    run(1);
+    car.input.boost = true;
+    run(1);
+    expect(car.boosting).toBe(false);
+    expect(car.boostCharge).toBe(1);
+  });
+
+  it('a full bar lasts boostDuration; running dry locks boost until it recharges to boostRestart', () => {
+    const { spawn, run } = setup();
+    const car = spawn(0, -400);
+    run(1);
+    car.input.throttle = 1;
+    car.input.boost = true;
+    run(car.stats.boostDuration - 1);
+    expect(car.boosting).toBe(true);
+    run(1.5);
+    expect(car.boostEmpty).toBe(true);
+    expect(car.boosting).toBe(false);
+    // Still holding boost: it recharges (no boosting) until boostRestart, then fires again.
+    run(car.stats.boostRestart * car.stats.boostRecharge - 1);
+    expect(car.boosting).toBe(false);
+    // The restart charge only lasts a moment, so step until it unlocks rather than overshooting.
+    let waited = 0;
+    while (car.boostEmpty && waited < 2) {
+      run(1 / 60);
+      waited += 1 / 60;
+    }
+    expect(car.boostEmpty).toBe(false);
+    run(1 / 60);
+    expect(car.boosting).toBe(true);
   });
 });

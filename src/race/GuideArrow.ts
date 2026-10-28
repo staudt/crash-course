@@ -3,7 +3,8 @@ import * as THREE from 'three';
 /**
  * A flat arrow showing the way to the next checkpoint. In the overhead view it lies on the
  * ground near the edge of the screen, in that direction as seen from the player's car; in the
- * chase view it floats ahead of the car, tilted up toward the camera. It also previews the next sharp
+ * chase and cockpit views it hangs at the top of the screen like a compass, tilted toward the
+ * camera, out of the way of the road. It also previews the next sharp
  * bend: the shaft curves the way the road will turn, by about as much as it turns, and the
  * colour warns how tight it is (yellow fast, orange medium, red hairpin). Drawn on top of
  * everything, and scaled by its distance from the camera so it keeps the same size on screen.
@@ -22,12 +23,14 @@ const CONFIG = {
   headWidth: 3.2,
   /** Geometry is cached per turn step (radians). */
   turnStep: (10 * Math.PI) / 180,
-  /** Chase view: distance ahead of the car (m), height above the ground, and tilt toward the camera (rad). */
-  aheadDistance: 9,
-  aheadLift: 2.2,
-  aheadTilt: 0.75,
-  /** Chase view size relative to the overhead one (it is seen edge-on and against a busy horizon). */
-  aheadScale: 2,
+  /**
+   * Top placement: `topDistance` m in front of the camera, `topHeight` of the way from the screen
+   * centre to its top edge, tilted `topTilt` rad toward the camera, `topSize` × its distance long.
+   */
+  topDistance: 12,
+  topHeight: 0.48,
+  topTilt: 1.0,
+  topSize: 0.2,
   /** Distance from the camera at which the arrow has its nominal size. */
   refDistance: 55,
   /** Height above the ground under the arrow. */
@@ -100,8 +103,8 @@ export function turnArrowGeometry(turn: number): THREE.BufferGeometry {
   return geo;
 }
 
-/** Where the arrow goes: near the screen edge on the ground (overhead view), or floating ahead of the car (chase view). */
-export type ArrowPlacement = 'edge' | 'ahead';
+/** Where the arrow goes: near the screen edge on the ground (overhead view), or at the top of the screen (chase and cockpit views). */
+export type ArrowPlacement = 'edge' | 'top';
 
 export class GuideArrow {
   /** Positions, tilts and scales the arrow; the mesh inside only turns to point. */
@@ -161,16 +164,20 @@ export class GuideArrow {
     if (tight < 0.5) this.material.color.copy(_calm).lerp(_medium, tight * 2);
     else this.material.color.copy(_medium).lerp(_alarm, tight * 2 - 1);
 
-    this.material.opacity = CONFIG.opacity * (0.75 + 0.25 * Math.sin(this.time * Math.PI * 2 * CONFIG.pulse));
+    // Against the bright sky the top placement needs to stay nearly opaque to keep its colour.
+    const pulse = Math.sin(this.time * Math.PI * 2 * CONFIG.pulse);
+    this.material.opacity = placement === 'top' ? 0.92 + 0.08 * pulse : CONFIG.opacity * (0.75 + 0.25 * pulse);
     camera.updateMatrixWorld();
 
-    if (placement === 'ahead') {
-      const x = car.x + Math.sin(viewYaw) * CONFIG.aheadDistance;
-      const z = car.z + Math.cos(viewYaw) * CONFIG.aheadDistance;
-      this.pivot.position.set(x, Math.max(groundAt(x, z), car.y - 1) + CONFIG.aheadLift, z);
-      this.pivot.rotation.set(-CONFIG.aheadTilt, viewYaw, 0);
+    if (placement === 'top') {
+      // In camera space: straight ahead, raised toward the top edge; then a level compass plane
+      // turned to the view's heading and tilted up so it faces the camera.
+      const d = CONFIG.topDistance;
+      const up = d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * CONFIG.topHeight;
+      this.pivot.position.set(0, up, -d).applyMatrix4(camera.matrixWorld);
+      this.pivot.rotation.set(-CONFIG.topTilt, viewYaw, 0);
       this.mesh.rotation.set(0, this.angle - viewYaw, 0);
-      this.pivot.scale.setScalar((this.pivot.position.distanceTo(camera.position) / CONFIG.refDistance) * CONFIG.aheadScale);
+      this.pivot.scale.setScalar((d * CONFIG.topSize) / (CONFIG.leadIn + CONFIG.arcLength + CONFIG.headLength));
       return;
     }
 

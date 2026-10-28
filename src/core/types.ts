@@ -7,9 +7,11 @@ export interface DriveInput {
   /** 0 .. 1 */
   brake: number;
   handbrake: boolean;
+  /** More push and top speed while the boost bar lasts (see Car.boostCharge). */
+  boost: boolean;
 }
 
-export const NEUTRAL_INPUT: Readonly<DriveInput> = { throttle: 0, steer: 0, brake: 0, handbrake: false };
+export const NEUTRAL_INPUT: Readonly<DriveInput> = { throttle: 0, steer: 0, brake: 0, handbrake: false, boost: false };
 
 export interface Vec3Like {
   x: number;
