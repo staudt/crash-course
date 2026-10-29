@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDelta, formatTime, minimapProject, ordinal } from './RaceHud';
+import { formatDelta, formatTime, minimapProject, ordinal, repairLabel } from './RaceHud';
 
 describe('formatTime', () => {
   it('formats m:ss.cc', () => {
@@ -52,5 +52,13 @@ describe('ordinal', () => {
   });
   it('handles larger numbers', () => {
     expect([21, 22, 23, 101, 102].map(ordinal)).toEqual(['21st', '22nd', '23rd', '101st', '102nd']);
+  });
+});
+
+describe('repairLabel', () => {
+  it('hidden outside a station, progress inside one', () => {
+    expect(repairLabel(null)).toBeNull();
+    expect(repairLabel(undefined)).toBeNull();
+    expect(repairLabel({ health: 0.648 })?.text).toBe('REPAIRING · 64%');
   });
 });

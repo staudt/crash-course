@@ -14,6 +14,7 @@ describe('Particles', () => {
       for (let i = 0; i < 400; i++) {
         p.emitDust(pos, v, 1);
         p.emitSmoke(pos, 1);
+        p.emitWreckSmoke(pos);
         p.emitImpact(pos, n, 1);
       }
       p.emitSparks(pos, n, 1000);

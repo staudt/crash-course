@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { NEUTRAL_INPUT, type DriveInput } from '../core/types';
 import { TrackPath, type TrackDef } from '../race/TrackPath';
 import { applyModifiers, cloneStats } from '../vehicle/CarStats';
-import { BASE_STYLE, RIVAL_CONFIG, RIVALS, RivalDriver, wasHit, type OtherCar, type RivalProfile } from './Rival';
+import { attackPoint, BASE_STYLE, RIVAL_CONFIG, RIVALS, RivalDriver, wasHit, type OtherCar, type RivalProfile, type RivalSelf } from './Rival';
 
 const square: TrackDef = {
   id: 'sq',
@@ -23,8 +23,7 @@ const byName = (name: string) => RIVALS.find((r) => r.name === name)!;
 // On the first straight, at x = 0 heading +Z, 30 m/s. The first bend (a left turn) starts at z = 380.
 const car = { x: 0, z: 220, fx: 0, fz: 1, speed: 30 };
 
-function run(rival: RivalDriver, others: OtherCar[], seconds: number, behind = 0, at = car): DriveInput {
-  const out: DriveInput = { ...NEUTRAL_INPUT };
+function run(rival: RivalDriver, others: OtherCar[], seconds: number, behind = 0, at: RivalSelf = car, out: DriveInput = { ...NEUTRAL_INPUT }): DriveInput {
   for (let t = 0; t < seconds - 1e-9; t += 0.1) rival.drive(at, others, behind, 0.1, out);
   return out;
 }
@@ -68,20 +67,133 @@ describe('RivalDriver: racing', () => {
     expect(r.pilot.pace).toBeCloseTo(1 - RIVAL_CONFIG.rubberBand / 2, 6);
   });
 
-  it('asks for a rescue when stuck or wrecked, not while driving', () => {
+  it('backs out when stuck against something, then drives on', () => {
     const r = new RivalDriver(path, steering, profile);
-    let rescue = false;
-    for (let t = 0; t < 10; t += 0.1) rescue ||= r.needsRescue(25, false, 0.1);
-    expect(rescue).toBe(false);
-    for (let t = 0; t < RIVAL_CONFIG.stuckTime + 0.2; t += 0.1) rescue ||= r.needsRescue(0.5, false, 0.1);
-    expect(rescue).toBe(true);
-    r.reset();
-    rescue = false;
-    for (let t = 0; t < RIVAL_CONFIG.wreckedTime + 0.2; t += 0.1) rescue ||= r.needsRescue(10, true, 0.1);
-    expect(rescue).toBe(true);
-    r.reset();
-    expect(r.needsRescue(30, false, 0.1, RIVAL_CONFIG.missedGate - 5)).toBe(false);
-    expect(r.needsRescue(30, false, 0.1, RIVAL_CONFIG.missedGate + 5)).toBe(true);
+    const stuck = { ...car, speed: 0.5 };
+    const out: DriveInput = { ...NEUTRAL_INPUT };
+    run(r, [], RIVAL_CONFIG.stuckTime - 0.3, 0, stuck, out);
+    expect(out.throttle).toBeGreaterThan(0);
+    run(r, [], 0.5, 0, stuck, out);
+    expect(out.throttle).toBe(-1);
+    run(r, [], RIVAL_CONFIG.reverseTime + 0.2, 0, car, out);
+    expect(out.throttle).toBeGreaterThan(0);
+  });
+
+  it('turns back for a gate it drove past, instead of carrying on', () => {
+    const r = new RivalDriver(path, steering, profile);
+    // Facing +Z, 40 m past the gate: it must turn round (full lock) toward the gate behind.
+    const out = run(r, [], 0.2, 0, { ...car, pastGate: RIVAL_CONFIG.missedGate + 15 });
+    expect(r.turningBack).toBe(true);
+    expect(Math.abs(out.steer)).toBe(1);
+    run(r, [], 0.1, 0, { ...car, pastGate: 0 });
+    expect(r.turningBack).toBe(false);
+  });
+});
+
+describe('RivalDriver: going after the player', () => {
+  const PLAYER = 9;
+  const driver = (name: string) => {
+    const r = new RivalDriver(path, steering, byName(name));
+    r.playerId = PLAYER;
+    return r;
+  };
+
+  it('anger at the player builds faster than at anyone else', () => {
+    const r = driver('Viper');
+    r.provoke(PLAYER, 4);
+    r.provoke(3, 4);
+    expect(r.angerAt(PLAYER)).toBeCloseTo(r.angerAt(3) * RIVAL_CONFIG.playerGrudge);
+  });
+
+  it('dirty drivers go for the player alongside; the smooth operator leaves it', () => {
+    const alongside = { id: PLAYER, x: 3, z: 219, vx: 0, vz: 30 };
+    const rusty = driver('Rusty');
+    rusty.provoke(PLAYER, 0.5); // a scrape on top of the urge
+    run(rusty, [alongside], 0.1);
+    expect(rusty.target).toBe(PLAYER);
+    const mirage = driver('Mirage');
+    mirage.provoke(PLAYER, 0.5);
+    run(mirage, [alongside], 0.1);
+    expect(mirage.target).toBeNull();
+    // The same car alongside that isn't the player is left alone.
+    const other = driver('Rusty');
+    other.provoke(4, 0.5);
+    run(other, [{ ...alongside, id: 4 }], 0.1);
+    expect(other.target).toBeNull();
+  });
+
+  it('keeps the pack around the player: more power behind it, less ahead', () => {
+    const r = driver('Viper');
+    run(r, [], 0.1, RIVAL_CONFIG.catchRange);
+    expect(r.power).toBeCloseTo(1 + RIVAL_CONFIG.catchUp);
+    run(r, [], 0.1, -RIVAL_CONFIG.catchRange);
+    expect(r.power).toBeCloseTo(1 - RIVAL_CONFIG.holdBack);
+    run(r, [], 0.1, 0);
+    expect(r.power).toBeCloseTo(1);
+  });
+
+  it('rage: hunting a car well ahead on a straight adds power and boosts', () => {
+    const r = driver('Rusty');
+    r.provoke(PLAYER, 10);
+    const out = run(r, [{ id: PLAYER, x: 0, z: 260, vx: 0, vz: 30 }], 0.1, 0, { ...car, speed: 20 });
+    expect(r.target).toBe(PLAYER);
+    expect(r.power).toBeCloseTo(1 + RIVAL_CONFIG.rage);
+    expect(out.boost).toBe(true);
+  });
+});
+
+describe('RivalDriver: chasing safely', () => {
+  it('a hunter still brakes for the bend ahead instead of charging into it flat out', () => {
+    const r = new RivalDriver(path, steering, profile);
+    r.provoke(4, 10);
+    // 60 m/s with the first bend (r = 20) 50 m ahead and the target just in front.
+    const out = run(r, [{ id: 4, x: 0, z: 345, vx: 0, vz: 30 }], 0.1, 0, { ...car, z: 330, speed: 60 });
+    expect(r.target).toBe(4);
+    expect(out.throttle).toBe(0);
+    expect(out.brake).toBeGreaterThan(0);
+    expect(out.boost).toBe(false);
+  });
+
+  it('a car facing the wrong way slows down before turning round', () => {
+    const r = new RivalDriver(path, steering, profile);
+    const out = run(r, [], 0.1, 0, { ...car, fz: -1, speed: 25 });
+    expect(out.throttle).toBe(0);
+    expect(out.brake).toBeGreaterThan(0);
+  });
+});
+
+describe('RivalDriver: pitting', () => {
+  // The square's checkpoints: s = 0 (z = 200 on the first straight) and every quarter lap.
+  const gate = path.checkpoints[1]!;
+  const at = (s: number, speed: number) => {
+    const p = path.pointAt(s, { x: 0, z: 0 });
+    const t = path.tangentAt(s, { x: 0, z: 0 });
+    return { x: p.x, z: p.z, fx: t.x, fz: t.z, speed };
+  };
+
+  it('a healthy car races through the station', () => {
+    const r = new RivalDriver(path, steering, profile);
+    const out = run(r, [], 0.1, 0, { ...at(gate - 30, 30), health: 0.8 });
+    expect(r.pitting).toBe(false);
+    expect(out.brake).toBe(0);
+  });
+
+  it('a badly damaged car brakes into the next station, waits, and leaves once mended', () => {
+    const r = new RivalDriver(path, steering, profile);
+    let out = run(r, [], 0.1, 0, { ...at(gate - 30, 30), health: 0.2 });
+    expect(r.pitting).toBe(true);
+    expect(out.brake).toBeGreaterThan(0);
+    out = run(r, [], 1, 0, { ...at(gate - RIVAL_CONFIG.pitStop, 0.5), health: 0.5 });
+    expect(out.brake).toBe(1);
+    expect(out.throttle).toBe(0);
+    out = run(r, [], 0.1, 0, { ...at(gate - RIVAL_CONFIG.pitStop, 0), health: RIVAL_CONFIG.pitUntil });
+    expect(r.pitting).toBe(false);
+    expect(out.throttle).toBeGreaterThan(0);
+  });
+
+  it('the careful driver pits sooner than the speed demon', () => {
+    expect(byName('Mirage').style.pitAt).toBeGreaterThan(byName('Viper').style.pitAt);
+    expect(byName('Rusty').style.pitAt).toBeLessThan(BASE_STYLE.pitAt);
   });
 });
 
@@ -119,7 +231,7 @@ describe('RivalDriver: anger', () => {
   const victim = { id: 7, x: 2, z: 235, vx: 0, vz: 28 };
 
   it('gets angry when hit hard, rams the attacker, then calms down', () => {
-    const r = new RivalDriver(path, steering, byName('Viper'));
+    const r = new RivalDriver(path, steering, profile); // plain style: rams straight at it
     r.provoke(7, 12);
     expect(r.angerAt(7)).toBeGreaterThan(RIVAL_CONFIG.fightAt);
     const out = run(r, [victim], 0.1);
@@ -128,7 +240,7 @@ describe('RivalDriver: anger', () => {
     expect(out.brake).toBe(0);
     // Steering toward the target, which is to the left (+X): steer < 0.
     expect(out.steer).toBeLessThan(0);
-    run(r, [victim], 20);
+    run(r, [victim], 40);
     expect(r.target).toBeNull();
     expect(r.angerAt(7)).toBeLessThan(RIVAL_CONFIG.fightUntil);
   });
@@ -163,11 +275,11 @@ describe('RivalDriver: anger', () => {
     expect(calm.target).toBeNull();
   });
 
-  it('landing a hit on the target is revenge: anger drops, bullies back off for a while', () => {
+  it('landing a big hit on the target is revenge: anger drops, bullies back off for a while', () => {
     const viper = new RivalDriver(path, steering, byName('Viper'));
-    viper.provoke(7, 15);
+    viper.provoke(7, 10);
     run(viper, [victim], 0.1);
-    viper.rammed(7);
+    viper.rammed(7, 20);
     expect(viper.angerAt(7)).toBeLessThanOrEqual(RIVAL_CONFIG.fightUntil);
     run(viper, [victim], 0.1);
     expect(viper.target).toBeNull();
@@ -175,11 +287,28 @@ describe('RivalDriver: anger', () => {
     const bully = new RivalDriver(path, steering, byName('Scorpion'));
     const inFront = { id: 3, x: 1, z: 236, vx: 0, vz: 25 };
     run(bully, [inFront], 0.1);
-    bully.rammed(3);
+    bully.rammed(3, RIVAL_CONFIG.solidHit);
     run(bully, [inFront], 1);
     expect(bully.target).toBeNull();
     run(bully, [inFront], RIVAL_CONFIG.bullyCooldown);
     expect(bully.target).toBe(3);
+  });
+
+  it('a rub or a glancing hit does not end the hunt', () => {
+    const viper = new RivalDriver(path, steering, byName('Viper'));
+    viper.provoke(7, 10);
+    run(viper, [victim], 0.1);
+    viper.rammed(7, 2);
+    viper.rammed(7, 3);
+    run(viper, [victim], 0.1);
+    expect(viper.target).toBe(7);
+  });
+
+  it('a hard hit keeps a normal driver hunting for a good while', () => {
+    const viper = new RivalDriver(path, steering, byName('Viper'));
+    viper.provoke(7, 10);
+    run(viper, [victim], 8);
+    expect(viper.target).toBe(7);
   });
 
   it('lets a target go once it is off in the dunes', () => {
@@ -215,5 +344,64 @@ describe('wasHit', () => {
     const a = { x: 0, z: 0, vx: 0, vz: 20 };
     const b = { x: 0, z: 4, vx: 0, vz: -20 };
     expect(wasHit(a, b) && wasHit(b, a)).toBe(true);
+  });
+});
+
+describe('attackPoint', () => {
+  // The prey drives +Z at 25 m/s from the origin; its left is +X.
+  const prey: OtherCar = { id: 1, x: 0, z: 0, vx: 0, vz: 25 };
+  const lead = 25 * RIVAL_CONFIG.ramLead;
+
+  it('ram: straight at where it will be', () => {
+    expect(attackPoint('ram', { x: 3, z: -20 }, prey)).toEqual({ x: 0, z: lead });
+  });
+
+  it('spin: from straight behind, first lines up beside its rear', () => {
+    const p = attackPoint('spin', { x: 0, z: -15 }, prey);
+    expect(p.z).toBeCloseTo(lead - RIVAL_CONFIG.spinRear);
+    expect(Math.abs(p.x)).toBeCloseTo(RIVAL_CONFIG.spinBeside);
+  });
+
+  it('spin: once beside its rear, cuts across the rear quarter', () => {
+    const p = attackPoint('spin', { x: 2.2, z: -3 }, prey);
+    expect(p.z).toBeCloseTo(lead - RIVAL_CONFIG.spinRear);
+    expect(p.x).toBeLessThan(0); // past its centreline, away from our side
+  });
+
+  it('shove: lines up on the road-centre side, then leans in to push it off the road', () => {
+    const nearLeftEdge = { ...prey, lateral: 5 };
+    // Coming from behind on its left (the edge side): go round to its right first.
+    expect(attackPoint('shove', { x: 2, z: -10 }, nearLeftEdge).x).toBeLessThan(-1);
+    // Alongside on its right: lean left into it, toward the edge.
+    expect(attackPoint('shove', { x: -2.5, z: 0 }, nearLeftEdge).x).toBeGreaterThan(0);
+  });
+});
+
+describe('RivalDriver: rivalries', () => {
+  it('pride: being overtaken stings the proud, not the smooth operator', () => {
+    const viper = new RivalDriver(path, steering, byName('Viper'));
+    const mirage = new RivalDriver(path, steering, byName('Mirage'));
+    for (const r of [viper, mirage]) {
+      run(r, [{ id: 4, x: 3, z: 215, vx: 0, vz: 32, ahead: -5 }], 0.1);
+      run(r, [{ id: 4, x: 3, z: 225, vx: 0, vz: 32, ahead: 5 }], 0.1);
+    }
+    expect(viper.angerAt(4)).toBeGreaterThan(0.25);
+    expect(mirage.angerAt(4)).toBe(0);
+  });
+
+  it('being held up winds up the hothead into a fight; the smooth operator stays patient', () => {
+    const blocker = { id: 5, x: 0, z: 230, vx: 0, vz: 20 };
+    const rusty = new RivalDriver(path, steering, byName('Rusty'));
+    const mirage = new RivalDriver(path, steering, byName('Mirage'));
+    run(rusty, [blocker], 2);
+    run(mirage, [blocker], 2);
+    expect(rusty.target).toBe(5);
+    expect(mirage.target).toBeNull();
+  });
+
+  it('personalities attack their own way', () => {
+    expect(byName('Viper').style.attack).toBe('spin');
+    expect(byName('Scorpion').style.attack).toBe('shove');
+    expect(byName('Rusty').style.attack).toBe('ram');
   });
 });

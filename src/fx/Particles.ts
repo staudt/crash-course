@@ -14,7 +14,9 @@ interface PoolConfig {
 }
 
 const DUST_COLORS = [0xd9773f, 0xc96a35, 0xe08550, 0xa8502a];
-const SMOKE_COLORS = [0x2a2a2d, 0x3a3a3e, 0x4a4a4f];
+/** Grey: a damaged car still running. Black: a wreck, so you can tell from across the arena. */
+const SMOKE_COLORS = [0x8c8c90, 0x9f9fa4, 0xb4b4b8];
+const WRECK_SMOKE_COLORS = [0x18181a, 0x222225, 0x2e2e32];
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
 
@@ -165,7 +167,7 @@ export class Particles {
     this.smoke = new Pool(
       new THREE.IcosahedronGeometry(0.5, 0),
       new THREE.MeshLambertMaterial({ flatShading: true }),
-      { capacity: 200, gravity: 0.8, drag: 0.8, growFrac: 0.4, stretch: false, castShadow: false },
+      { capacity: 700, gravity: 0.8, drag: 0.8, growFrac: 0.4, stretch: false, castShadow: false },
     );
     for (const p of [this.dust, this.sparks, this.smoke]) scene.add(p.mesh);
   }
@@ -214,6 +216,16 @@ export class Particles {
       this.smoke.emit(
         pos, rnd(-0.4, 0.4), rnd(1.2, 2.2), rnd(-0.4, 0.4),
         rnd(1.3, 1.7), rnd(0.5, 0.9) * (0.6 + a * 0.8), rnd(-2, 2), pick(SMOKE_COLORS),
+      );
+    }
+  }
+
+  /** A wreck's thick black column: bigger, longer-lived puffs that rise higher. */
+  emitWreckSmoke(pos: THREE.Vector3): void {
+    for (let i = 0; i < 2; i++) {
+      this.smoke.emit(
+        pos, rnd(-0.6, 0.6), rnd(2.4, 3.8), rnd(-0.6, 0.6),
+        rnd(2.4, 3.2), rnd(1.1, 1.7), rnd(-1.5, 1.5), pick(WRECK_SMOKE_COLORS),
       );
     }
   }

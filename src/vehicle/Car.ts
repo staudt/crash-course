@@ -2,8 +2,11 @@ import * as THREE from 'three';
 import { RAPIER, type Physics } from '../core/Physics';
 import { NEUTRAL_INPUT, type DriveInput, type Vec3Like } from '../core/types';
 import type { CarModel, CarPart } from './CarModel';
+import type { DamageReport } from './DamageReport';
 import { DEFAULT_DIMS, type CarDims, type CarStats } from './CarStats';
+import { knockAmount, ramFactor } from './Crash';
 import { applyDent } from './Deformer';
+import { repairStep } from './Repair';
 
 export interface CarEvents {
   /** A part's HP hit 0. Its mesh is still attached; the listener should hand it to Debris. */
@@ -13,10 +16,15 @@ export interface CarEvents {
   onWrecked?(car: Car): void;
   /** This car felt a jolt of `impact` m/s (≥ CAR_CONTACT_MIN) while touching `other`. Fired from each car's own point of view. */
   onCarContact?(car: Car, other: Car, impact: number): void;
+  /** Sliding along a wall at `speed` m/s this step (world-space contact point, normal pointing out of the car). */
+  onScrape?(car: Car, point: THREE.Vector3, normal: THREE.Vector3, speed: number): void;
 }
 
 /** Smallest jolt (m/s) between two cars that counts as a contact for `onCarContact` (bumps, not brushes). */
 export const CAR_CONTACT_MIN = 1.5;
+
+/** Smooth walls: the unit outward normal (ground plane) of a wall collider's outline at (x, z), or null if it isn't one. */
+export type WallFn = (collider: RAPIER.Collider, x: number, z: number) => { x: number; z: number } | null;
 
 /** Sand softness (0 = firm, 1 = deep soft sand) of whatever a wheel is touching. */
 export type SurfaceFn = (ground: RAPIER.Collider, x: number, z: number) => number;
@@ -28,6 +36,13 @@ export interface SpawnPose {
 
 /** Contact-force events below this don't even get recorded. The velocity-change check does the real filtering. */
 const CONTACT_EVENT_THRESHOLD = 1500;
+/** Metres ahead the chassis looks for contacts (Rapier soft CCD). */
+const SOFT_CCD = 1.5;
+const CHASSIS_FRICTION = 0.5;
+/** A wrecked car under repair drives again once its health is back to this fraction. */
+const UNWRECK_HEALTH = 0.2;
+/** s without repair() that counts as having driven off: the next part refit starts its wait over. */
+const REPAIR_GAP = 0.15;
 /** How far beyond a part's bounding box a dent can reach it. */
 const PART_REACH = 0.25;
 
@@ -67,6 +82,12 @@ export class Car {
   surface: SurfaceFn | null = null;
   /** Average softness under the wheels last step, 0..1 (airborne wheels count as 0). */
   surfaceSoftness = 0;
+  /** Smooth-wall lookup (glancing contact slides along, see `glance`). Unset = walls are like any other obstacle. */
+  walls: WallFn | null = null;
+  /** Asphalt lookup (0..1 paved). Unset = nothing is paved. */
+  paving: SurfaceFn | null = null;
+  /** How much of the ground under the grounded wheels was asphalt last step, 0..1. */
+  surfacePaved = 0;
 
   health: number;
   partsLost = 0;
@@ -77,6 +98,10 @@ export class Car {
   boostEmpty = false;
   /** Boost active this step (held, throttle on, charge left). */
   boosting = false;
+  /** Multiplies engine force and top speed (1 = stock). The race director sets it for AI catch-up and rage. */
+  powerScale = 1;
+  /** Level multiplier on the health a hit takes (the derby lowers it so cars take many more hits; dents and lost parts are unchanged). */
+  healthLoss = 1;
   /** Handbrake spin direction (+1 = nose swinging left), latched when the handbrake goes on. */
   private spinDir = 0;
   /** A spin carried on after the handbrake was released (see stats.spinCommit). */
@@ -84,17 +109,34 @@ export class Car {
   private wasHandbraking = false;
   /** How far (rad) the car has rotated in the spin direction since the handbrake went on. */
   private spinTurned = 0;
+  /** Seconds of knock left after a big hit (see stats.knockTime). */
+  private knockTimer = 0;
 
   private readonly physics: Physics;
   private readonly events: CarEvents;
   private readonly originals = new Map<CarPart, Float32Array>();
   private readonly partHp = new Map<CarPart, number>();
+  /** Pristine copy of each part (not in the scene) and where it hangs, for refitting it after it broke off. */
+  private readonly spares = new Map<CarPart, { mesh: THREE.Mesh; parent: THREE.Object3D }>();
+  /** Parts whose vertices have moved from their originals. */
+  private readonly dented = new Set<CarPart>();
+  /** Detached parts, in the order they came off. */
+  private readonly lostParts: CarPart[] = [];
+  /** Seconds of continuous repair since the last refit. */
+  private refitClock = 0;
+  /** Metres slid along a wall since the last scratch. */
+  private scrapeDist = 0;
+  /** Seconds since repair() was last called. */
+  private sinceRepair = Infinity;
   private readonly wheelLost = [false, false, false, false];
   private steerAngle = 0;
+  /** The input with the steering cut down for lost front wheels. */
+  private readonly limpInput: DriveInput = { ...NEUTRAL_INPUT };
   /** Multiplier on grip: handbrakeGrip while the handbrake is held, easing back to 1. */
   private gripScale = 1;
   private upsideDownTime = 0;
   private readonly prevVel = new THREE.Vector3();
+  private readonly prevAngvel = new THREE.Vector3();
   private readonly contacts = new Set<RAPIER.Collider>();
 
   // Render interpolation between the last two physics states.
@@ -119,7 +161,11 @@ export class Car {
         .setRotation(rot)
         .setLinearDamping(0.05)
         .setAngularDamping(0.6)
-        .setCcdEnabled(true),
+        .setCcdEnabled(true)
+        // The chassis box is thin (0.64 m): at ~200 km/h closing speed two cars overlap deeper than
+        // that in one step, get pushed apart vertically and pass through each other. Soft CCD
+        // catches the contact a step early.
+        .setSoftCcdPrediction(SOFT_CCD),
     );
 
     const { halfWidth: hx, halfHeight: hy, halfLength: hz } = dims;
@@ -129,7 +175,7 @@ export class Car {
     this.collider = world.createCollider(
       RAPIER.ColliderDesc.cuboid(hx, hy, hz)
         .setMassProperties(m, { x: 0, y: -stats.comDrop, z: 0 }, { x: k * (hy * hy + hz * hz), y: k * (hx * hx + hz * hz), z: k * (hx * hx + hy * hy) }, { x: 0, y: 0, z: 0, w: 1 })
-        .setFriction(0.5)
+        .setFriction(CHASSIS_FRICTION)
         .setRestitution(0.1)
         .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
         .setContactForceEventThreshold(CONTACT_EVENT_THRESHOLD),
@@ -154,6 +200,9 @@ export class Car {
     for (const part of model.parts) {
       const pos = part.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
       this.originals.set(part, (pos.array as Float32Array).slice());
+      const spare = part.mesh.clone();
+      spare.geometry = part.mesh.geometry.clone();
+      this.spares.set(part, { mesh: spare, parent: part.mesh.parent ?? model.root });
       const hp = stats.partHp[part.kind];
       if (Number.isFinite(hp)) this.partHp.set(part, hp);
     }
@@ -222,20 +271,62 @@ export class Car {
     return n;
   }
 
+  /** 0..1: how knocked off line the car is after a hit. Grip and yaw control are loosened by this much. */
+  get knock(): number {
+    return Math.min(1, this.knockTimer / this.stats.knockTime);
+  }
+
+  /** Anything to repair: health, dents or lost parts. */
+  get damaged(): boolean {
+    return this.health < this.stats.maxHealth || this.dented.size > 0 || this.lostParts.length > 0;
+  }
+
   isWheelLost(i: number): boolean {
     return this.wheelLost[i];
+  }
+
+  /** Damage by zone for the HUD's damage map: each breakable part's HP left (null once it's off), the wheels, overall health. */
+  damageReport(): DamageReport {
+    const s = this.stats;
+    const left = (part: CarPart): number | null => {
+      const hp = this.partHp.get(part);
+      return hp === undefined ? null : Math.max(0, Math.min(1, hp / s.partHp[part.kind]));
+    };
+    const report: DamageReport = {
+      chassis: Math.max(0, this.health / s.maxHealth),
+      bumperFront: null,
+      engine: this.wrecked ? 0 : Math.max(0, this.health / s.maxHealth),
+      doorLeft: null,
+      doorRight: null,
+      bumperRear: null,
+      wheels: [null, null, null, null],
+      wrecked: this.wrecked,
+    };
+    for (const part of this.model.parts) {
+      if (part.wheelIndex >= 0) report.wheels[part.wheelIndex] = left(part);
+      else if (part.kind === 'bumperFront' || part.kind === 'bumperRear' || part.kind === 'doorLeft' || part.kind === 'doorRight') report[part.kind] = left(part);
+    }
+    return report;
+  }
+
+  /** Fraction of the steering left: each lost front wheel takes half (no front wheels, no turning, handbrake turns included). */
+  get steerable(): number {
+    return ((this.wheelLost[0] ? 0 : 1) + (this.wheelLost[1] ? 0 : 1)) / 2;
   }
 
   /** Runs before each physics step. */
   fixedUpdate(dt: number): void {
     const s = this.stats;
-    const inp = this.wrecked ? NEUTRAL_INPUT : this.input;
+    const steerable = this.steerable;
+    let inp: DriveInput = this.wrecked ? NEUTRAL_INPUT : this.input;
+    if (steerable < 1 && inp.steer !== 0) inp = Object.assign(this.limpInput, inp, { steer: inp.steer * steerable });
     const vf = this.forwardSpeed;
 
     // Steering lock shrinks with speed (hyperbolically, like real cars), so gentle steering stays
     // within grip at any speed while full lock asks for more than the tyres have: drifts come from
     // cornering speed. Positive steer = right = negative wheel angle about +Y.
-    const maxSteer = Math.max(s.highSpeedSteer, s.maxSteer / (1 + Math.abs(vf) / s.steerFadeSpeed));
+    const lock = Math.max(s.highSpeedSteer, s.maxSteer / (1 + Math.abs(vf) / s.steerFadeSpeed));
+    const maxSteer = vf < 0 ? lock * s.reverseSteer : lock;
     const target = -inp.steer * maxSteer;
     const step = s.steerRate * dt;
     this.steerAngle += Math.max(-step, Math.min(step, target - this.steerAngle));
@@ -244,6 +335,9 @@ export class Car {
     // turns into a held drift.
     if (inp.handbrake) this.gripScale = s.handbrakeGrip;
     else this.gripScale = Math.min(1, this.gripScale + s.gripRecovery * dt);
+    this.knockTimer = Math.max(0, this.knockTimer - dt);
+    this.sinceRepair += dt;
+    if (this.sinceRepair > REPAIR_GAP) this.refitClock = 0;
 
     const c = this.controller;
     for (let i = 0; i < 2; i++) if (!this.wheelLost[i]) c.setWheelSteering(i, this.steerAngle);
@@ -260,6 +354,8 @@ export class Car {
     this.applyAssists(dt, inp);
     const v = this.body.linvel();
     this.prevVel.set(v.x, v.y, v.z);
+    const w = this.body.angvel();
+    this.prevAngvel.set(w.x, w.y, w.z);
     this.contacts.clear();
   }
 
@@ -285,15 +381,17 @@ export class Car {
     const s = this.stats;
     const b = this.body;
     const m = b.mass();
-    const top = s.topSpeed * (this.boosting ? s.boostTopSpeed : 1);
-    const engine = s.engineForce * (this.boosting ? s.boostForce : 1);
+    const top = s.topSpeed * (this.boosting ? s.boostTopSpeed : 1) * this.powerScale;
+    const engine = s.engineForce * (this.boosting ? s.boostForce : 1) * this.powerScale;
     const speedFrac = Math.min(1, Math.abs(vf) / top);
     const healthFactor = 0.45 + 0.55 * Math.max(0, this.health / s.maxHealth);
 
     let thrust = 0; // N along the nose
     let brake = inp.brake; // 0..1 of brakeDecel, opposing motion
     if (inp.throttle > 0) {
-      if (vf < -1) brake = Math.max(brake, inp.throttle);
+      // Throttle while rolling backwards brakes, but not mid handbrake spin: past 90° the car is "rolling
+      // backwards" too, and braking there stopped every held spin dead.
+      if (vf < -1) brake = inp.handbrake || this.spinning ? brake : Math.max(brake, inp.throttle);
       else thrust = inp.throttle * engine * Math.max(0, 1 - speedFrac * speedFrac) * healthFactor;
     } else if (inp.throttle < 0) {
       if (vf > 1) brake = Math.max(brake, -inp.throttle);
@@ -343,7 +441,9 @@ export class Car {
     const reversing = vf < 0;
     const aim = reversing ? _v.copy(nose).negate() : _v.copy(nose);
 
-    const aGrip = s.gripAccel * ground * this.gripScale * (1 - s.sandSlip * this.surfaceSoftness);
+    const knock = this.knock;
+    const paved = this.surfacePaved;
+    const aGrip = s.gripAccel * ground * this.gripScale * (1 - knock * (1 - s.knockGrip)) * (1 - s.sandSlip * this.surfaceSoftness) * (1 + (s.asphaltGrip - 1) * paved);
     let pathRate = 0; // how fast the velocity direction is turning this step (rad/s, + = left)
     let slip = 0; // signed angle from velocity to aim (+ = nose is left of travel)
 
@@ -377,8 +477,10 @@ export class Car {
     // steering lock, so they whip round at any speed. The swing is scaled by the speed over the ground
     // (not along the nose, which falls to zero as the car turns sideways and used to stall it at 90°),
     // and its direction is latched when the handbrake goes on (forward speed changes sign past 90°).
-    const spinRate = s.handbrakeYawRate * Math.min(1, sp / 6);
     const travelSlip = sp < 0.5 ? 0 : Math.abs(signedAngle(vp, nose, up)); // 0 = going where it points, π = going backwards
+    // Past sideways the swing eases off, so the second half of the 180 takes longer than the first.
+    const late = Math.max(0, Math.min(1, (travelSlip - s.spinLateFrom) / 0.44));
+    const spinRate = s.handbrakeYawRate * Math.min(1, sp / 6) * (1 - late * (1 - s.spinLateRate));
     if (inp.handbrake && !this.wasHandbraking) {
       this.spinDir = 0;
       this.spinTurned = 0;
@@ -405,31 +507,40 @@ export class Car {
     // (+slip = nose left of travel, so rotate right) while grip swings the travel toward the nose,
     // so they meet and the car runs straight. (Following pathRate here made them chase each other.)
     if (!inp.handbrake && Math.abs(inp.steer) < 0.1) target = -slip * s.selfAlign;
-    const maxSlip = inp.handbrake || this.spinning ? Math.PI : s.driftMaxSlip;
+    const maxSlip = inp.handbrake || this.spinning || knock > 0 ? Math.PI : s.driftMaxSlip * (1 + (s.asphaltSlip - 1) * paved);
     if (slip > maxSlip && target > pathRate) target = pathRate;
     if (slip < -maxSlip && target < pathRate) target = pathRate;
     target = Math.max(-s.maxYawRate, Math.min(s.maxYawRate, target));
 
     const w = b.angvel();
     const wy = w.x * up.x + w.y * up.y + w.z * up.z;
-    const maxChange = s.yawResponse * ground * dt;
+    // A knocked car's yaw is left to the crash: control returns as the knock wears off.
+    const maxChange = s.yawResponse * ground * (1 - knock) * dt;
     const dw = Math.max(-maxChange, Math.min(maxChange, target - wy));
     if (dw !== 0) b.setAngvel({ x: w.x + up.x * dw, y: w.y + up.y * dw, z: w.z + up.z * dw }, true);
   }
 
-  /** Soft sand bogs the car down: a horizontal drag proportional to speed and softness under the wheels. */
+  /** Soft sand bogs the car down: a horizontal drag proportional to speed and softness under the wheels. Also samples the asphalt. */
   private applySandDrag(dt: number): void {
     this.surfaceSoftness = 0;
-    if (!this.surface) return;
+    this.surfacePaved = 0;
+    if (!this.surface && !this.paving) return;
     const c = this.controller;
     let soft = 0;
+    let paved = 0;
+    let grounded = 0;
     for (let i = 0; i < 4; i++) {
       if (this.wheelLost[i] || !c.wheelIsInContact(i)) continue;
       const ground = c.wheelGroundObject(i);
       const p = c.wheelContactPoint(i);
-      if (ground && p) soft += this.surface(ground, p.x, p.z);
+      if (!ground || !p) continue;
+      grounded++;
+      if (this.surface) soft += this.surface(ground, p.x, p.z);
+      if (this.paving) paved += this.paving(ground, p.x, p.z);
     }
     this.surfaceSoftness = soft / 4;
+    // Grip already scales with the grounded wheels, so this is the share of those on asphalt.
+    this.surfacePaved = grounded > 0 ? paved / grounded : 0;
     const k = this.stats.sandDrag * this.surfaceSoftness * this.stats.mass * dt;
     if (k <= 0) return;
     const v = this.body.linvel();
@@ -462,8 +573,9 @@ export class Car {
       }, true);
     }
 
-    // Auto-right after being stuck on the side/roof for a while.
-    if (_up.y < 0.25 && this.speed < 3) {
+    // Auto-right after being stuck on the side/roof for a while, or lying steeply tilted on fewer
+    // than three wheels (on its side against a dune) where it can't drive off.
+    if ((_up.y < 0.25 || (_up.y < 0.7 && grounded < 3)) && this.speed < 3) {
       this.upsideDownTime += dt;
       if (this.upsideDownTime > 1.6) this.flipUpright();
     } else {
@@ -488,6 +600,10 @@ export class Car {
   postStep(): void {
     this.capture();
     if (this.contacts.size === 0) return;
+    if (this.glance()) {
+      this.scrape();
+      return;
+    }
 
     const v = this.body.linvel();
     const g = this.physics.world.gravity;
@@ -505,7 +621,13 @@ export class Car {
         if (owner instanceof Car && owner !== this) this.events.onCarContact(this, owner, impact);
       }
     }
-    const strength = (impact - this.stats.dentThreshold) / this.stats.toughness;
+    const scale = this.hitScale();
+    const s = this.stats;
+    this.scrape();
+    const k = knockAmount(Math.hypot(dvLocal.x, dvLocal.z) * scale, s.knockThreshold, s.knockFull);
+    this.knockTimer = Math.max(this.knockTimer, k * s.knockTime);
+    this.spinFromHit(dvLocal, scale);
+    const strength = (impact * scale - s.dentThreshold) / s.toughness;
     if (strength <= 0) return;
     dvLocal.normalize();
 
@@ -537,10 +659,178 @@ export class Car {
   }
 
   /**
+   * A glancing touch on a smooth wall (`walls`), moving into it at less than scrapeAngle: slide along it.
+   * The solver's own answer can't be trusted there: pressed into a wall made of several colliders, the chassis
+   * sinks a little, and near a joint the next collider pushes it out backwards through its end, stopping it dead.
+   * So the step's result is replaced: the velocity along the wall's smooth outline (less scrapeDrag), nothing into
+   * it, the yaw rate from before the step plus a swing of the nose toward parallel. No jolt, so no crash; the
+   * scrape effects still apply. Anything else touching us (a car, debris) leaves it to the solver.
+   */
+  private glance(): boolean {
+    if (!this.walls) return false;
+    const t = this.body.translation();
+    let n: { x: number; z: number } | null = null;
+    for (const other of this.contacts) {
+      if (this.physics.ownerOf(other) instanceof Car || !other.parent()?.isFixed()) return false;
+      n ??= this.walls(other, t.x, t.z);
+    }
+    if (!n) return false;
+    const s = this.stats;
+    const v = this.prevVel;
+    const sp = Math.hypot(v.x, v.z);
+    const into = -(v.x * n.x + v.z * n.z);
+    if (sp < s.scrapeSpeed || into > sp * Math.sin(s.scrapeAngle)) return false;
+    const keep = 1 - s.scrapeDrag * this.physics.dt;
+    const off = Math.max(0, into);
+    const now = this.body.linvel();
+    this.body.setLinvel({ x: (v.x + n.x * off) * keep, y: now.y, z: (v.z + n.z * off) * keep }, true);
+    const f = this.forwardOnPlane(_fwd);
+    const nose = f.x * n.x + f.z * n.z; // < 0: pointing into the wall
+    const w = this.prevAngvel;
+    // Turning left (+yaw) swings the nose toward its left side, (fz, -fx).
+    const left = f.z * n.x - f.x * n.z;
+    const swing = nose < 0 && f.dot(_w.set(v.x, 0, v.z)) > 0 ? Math.sign(left) * s.scrapeAlign * -nose : 0;
+    this.body.setAngvel({ x: w.x, y: w.y + swing, z: w.z }, true);
+    return true;
+  }
+
+  /**
+   * Rubbing along a wall (a static collider touching the side or an end of the chassis, not its floor)
+   * while moving: sparks every step, a little wear, and a light scratch dent every scrapeEvery metres.
+   * Hits are still judged by the jolt in postStep; a glancing slide along a smooth wall has almost none.
+   */
+  private scrape(): void {
+    const s = this.stats;
+    const speed = this.speed;
+    if (speed < s.scrapeSpeed) return;
+    for (const other of this.contacts) {
+      if (!other.parent()?.isFixed()) continue;
+      let point: THREE.Vector3 | null = null;
+      let normal: THREE.Vector3 | null = null;
+      this.physics.world.contactPair(this.collider, other, (manifold, flipped) => {
+        const n = manifold.numContacts();
+        const ln = flipped ? manifold.localNormal2() : manifold.localNormal1();
+        // Only a wall beside us: not our floor (landings, lying on the roof), and not the ground (a car sliding on its side).
+        if (n === 0 || Math.abs(ln.y) > 0.5 || Math.abs(_w.set(ln.x, ln.y, ln.z).applyQuaternion(this.currRot).y) > 0.5) return;
+        point = new THREE.Vector3();
+        for (let i = 0; i < n; i++) {
+          const cp = flipped ? manifold.localContactPoint2(i) : manifold.localContactPoint1(i);
+          if (cp) point.add(_w.set(cp.x, cp.y, cp.z));
+        }
+        point.divideScalar(n);
+        normal = new THREE.Vector3(ln.x, ln.y, ln.z);
+      });
+      if (!point || !normal) continue;
+      const p: THREE.Vector3 = point;
+      const ln: THREE.Vector3 = normal;
+      const dt = this.physics.dt;
+      this.health = Math.max(0, this.health - s.scrapeWear * dt * this.healthLoss);
+      this.scrapeDist += speed * dt;
+      if (this.scrapeDist >= s.scrapeEvery) {
+        this.scrapeDist = 0;
+        this.dent(p, ln.clone().negate(), s.scrapeDent); // cosmetic: the wear above is the cost
+      }
+      if (this.events.onScrape) {
+        const wp = p.clone().applyQuaternion(this.currRot).add(this.currPos);
+        this.events.onScrape(this, wp, ln.applyQuaternion(this.currRot), speed);
+      }
+      if (this.health <= 0 && !this.wrecked) {
+        this.wrecked = true;
+        this.events.onWrecked?.(this);
+      }
+      return;
+    }
+  }
+
+  /**
+   * Arcade spin-out: a car hit away from our centre (a shove on the tail) adds a yaw kick by the
+   * leverage of the jolt `dvLocal` (chassis space) at the contact point, scaled like the damage, and
+   * knocks us so the grip model doesn't straighten it out at once.
+   */
+  private spinFromHit(dvLocal: THREE.Vector3, scale: number): void {
+    const s = this.stats;
+    for (const other of this.contacts) {
+      if (!(this.physics.ownerOf(other) instanceof Car)) continue;
+      const p = this.contactPoint(other);
+      if (!p) continue;
+      const lever = (p.z * dvLocal.x - p.x * dvLocal.z) / (this.dims.halfLength * this.dims.halfLength);
+      const kick = Math.max(-s.hitSpinMax, Math.min(s.hitSpinMax, s.hitSpin * scale * lever));
+      if (Math.abs(kick) < 0.3) return;
+      this.up(_up);
+      const w = this.body.angvel();
+      this.body.setAngvel({ x: w.x + _up.x * kick, y: w.y + _up.y * kick, z: w.z + _up.z * kick }, true);
+      this.knockTimer = Math.max(this.knockTimer, (Math.abs(kick) / s.hitSpinMax) * s.knockTime);
+      return;
+    }
+  }
+
+  /** Average chassis-local contact point with `other` this step, or null if they are apart. */
+  private contactPoint(other: RAPIER.Collider): THREE.Vector3 | null {
+    let p: THREE.Vector3 | null = null;
+    this.physics.world.contactPair(this.collider, other, (manifold, flipped) => {
+      const n = manifold.numContacts();
+      if (n === 0) return;
+      p = new THREE.Vector3();
+      for (let i = 0; i < n; i++) {
+        const cp = flipped ? manifold.localContactPoint2(i) : manifold.localContactPoint1(i);
+        if (cp) p.add(_w.set(cp.x, cp.y, cp.z));
+      }
+      p.divideScalar(n);
+    });
+    return p;
+  }
+
+  /**
+   * How much this step's jolt counts, by what we hit. Static world: worldDamage. Another car:
+   * carDamage, shifted toward whichever car was driving into the other more slowly (ramFactor);
+   * mass is already in the jolt. Anything else (stakes, debris): 1. A car contact wins over the rest.
+   */
+  private hitScale(): number {
+    const s = this.stats;
+    let car = 0;
+    let world = true;
+    const me = this.body.translation();
+    for (const other of this.contacts) {
+      const owner = this.physics.ownerOf(other);
+      if (owner instanceof Car && owner !== this) {
+        const t = owner.body.translation();
+        const dx = t.x - me.x;
+        const dz = t.z - me.z;
+        const d = Math.hypot(dx, dz) || 1;
+        // Closing speeds just before the step (prevVel is the velocity the step started from).
+        const myPush = (this.prevVel.x * dx + this.prevVel.z * dz) / d;
+        const theirPush = -(owner.prevVel.x * dx + owner.prevVel.z * dz) / d;
+        car = Math.max(car, s.carDamage * ramFactor(myPush, theirPush, s.ramAdvantage));
+      } else if (!other.parent()?.isFixed()) {
+        world = false;
+      }
+    }
+    if (car > 0) return car;
+    return world ? s.worldDamage : 1;
+  }
+
+  /**
    * Applies one impact in chassis-local space. `dir` is the direction metal is pushed (into the car).
    * Public so debug tools and tests can dent cars directly.
    */
   hit(pointLocal: THREE.Vector3, dir: THREE.Vector3, strength: number): void {
+    const s = this.stats;
+    this.dent(pointLocal, dir, strength, true);
+    this.health = Math.max(0, this.health - strength * s.damageScale * this.healthLoss);
+
+    if (this.events.onImpact) {
+      const wp = pointLocal.clone().applyQuaternion(this.currRot).add(this.currPos);
+      const wn = dir.clone().negate().applyQuaternion(this.currRot);
+      this.events.onImpact(this, wp, wn, strength);
+    }
+    if (this.health <= 0 && !this.wrecked) {
+      this.wrecked = true;
+      this.events.onWrecked?.(this);
+    }
+  }
+
+  /** Dents the bodywork at a chassis-local point and, for a hit (`hit`), costs nearby parts and wheels HP. No health loss. */
+  private dent(pointLocal: THREE.Vector3, dir: THREE.Vector3, strength: number, hit = false): void {
     const s = this.stats;
     const depth = Math.min(s.maxDent * 1.2, s.dentDepthScale * strength);
     const radius = s.dentRadius * Math.min(1.8, 0.8 + 0.08 * strength);
@@ -552,11 +842,11 @@ export class Car {
       const he = part.halfExtents;
       if (part.wheelIndex >= 0) {
         // Wheels don't dent, but take HP damage when hit nearby.
-        if (this.wheelLost[part.wheelIndex]) continue;
+        if (!hit || this.wheelLost[part.wheelIndex]) continue;
         const pivot = this.model.wheelPivots[part.wheelIndex];
         const d = pivot.position.distanceTo(pointLocal);
         const near = 1 - d / (radius + he.y + PART_REACH);
-        if (near > 0) this.damagePart(part, strength * 6 * near, detach);
+        if (near > 0) this.damagePart(part, strength * s.wheelDamage * near, detach);
         continue;
       }
       if (!part.mesh.parent) continue; // already detached
@@ -570,22 +860,12 @@ export class Car {
       if (moved > 0) {
         pos.needsUpdate = true;
         geom.computeBoundingSphere();
-        this.damagePart(part, moved * 1.5 + strength * 2, detach);
+        this.dented.add(part);
+        if (hit) this.damagePart(part, moved * 1.5 + strength * 2, detach);
       }
     }
 
-    this.health = Math.max(0, this.health - strength * s.damageScale);
     for (const part of detach) this.detach(part);
-
-    if (this.events.onImpact) {
-      const wp = pointLocal.clone().applyQuaternion(this.currRot).add(this.currPos);
-      const wn = dir.clone().negate().applyQuaternion(this.currRot);
-      this.events.onImpact(this, wp, wn, strength);
-    }
-    if (this.health <= 0 && !this.wrecked) {
-      this.wrecked = true;
-      this.events.onWrecked?.(this);
-    }
   }
 
   private damagePart(part: CarPart, amount: number, detach: CarPart[]): void {
@@ -600,8 +880,84 @@ export class Car {
     }
   }
 
+  /**
+   * One step of repair at a station (call every frame or step while inside it; a gap longer than
+   * REPAIR_GAP restarts the wait for the next refit). Health, part HP
+   * and every dent ease back to new along the repair curve: most of it in the first ~10 s, all of it
+   * by stats.repairTime. Lost parts are refitted one per stats.repairRefit s, wheels first.
+   */
+  repair(dt: number): void {
+    const s = this.stats;
+    const step = (remaining: number) => repairStep(remaining, dt, s.repairTau, s.repairTime);
+    this.health = s.maxHealth * (1 - step(1 - this.health / s.maxHealth));
+    if (this.wrecked && this.health >= s.maxHealth * UNWRECK_HEALTH) this.wrecked = false;
+    for (const [part, hp] of this.partHp) {
+      const full = s.partHp[part.kind];
+      this.partHp.set(part, full * (1 - step(1 - hp / full)));
+    }
+    for (const part of this.dented) if (!this.undent(part, step)) this.dented.delete(part);
+    this.sinceRepair = 0;
+    if (this.lostParts.length === 0) return;
+    this.refitClock += dt;
+    if (this.refitClock >= s.repairRefit) {
+      this.refitClock = 0;
+      this.refit();
+    }
+  }
+
+  /** Eases a part's vertices back toward their originals. Returns false once it is fully restored. */
+  private undent(part: CarPart, step: (remaining: number) => number): boolean {
+    const geom = part.mesh.geometry;
+    const pos = geom.getAttribute('position') as THREE.BufferAttribute;
+    const a = pos.array as Float32Array;
+    const o = this.originals.get(part)!;
+    const max = this.stats.maxDent;
+    let left = false;
+    for (let i = 0; i < a.length; i += 3) {
+      const dx = a[i]! - o[i]!;
+      const dy = a[i + 1]! - o[i + 1]!;
+      const dz = a[i + 2]! - o[i + 2]!;
+      const d = Math.hypot(dx, dy, dz);
+      if (d === 0) continue;
+      // Each vertex follows the curve by its own depth, so seam duplicates (same offset) stay together.
+      const k = (step(Math.min(1, d / max)) * max) / d;
+      if (k > 0) left = true;
+      a[i] = o[i]! + dx * k;
+      a[i + 1] = o[i + 1]! + dy * k;
+      a[i + 2] = o[i + 2]! + dz * k;
+    }
+    pos.needsUpdate = true;
+    geom.computeBoundingSphere();
+    return left;
+  }
+
+  /** Fits a fresh copy of a lost part, wheels first. */
+  private refit(): void {
+    const w = this.lostParts.findIndex((p) => p.wheelIndex >= 0);
+    const [part] = this.lostParts.splice(w >= 0 ? w : 0, 1);
+    if (!part) return;
+    const spare = this.spares.get(part)!;
+    const mesh = spare.mesh.clone();
+    mesh.geometry = spare.mesh.geometry.clone();
+    spare.parent.add(mesh);
+    part.mesh = mesh;
+    this.partHp.set(part, this.stats.partHp[part.kind]);
+    this.partsLost--;
+    if (part.wheelIndex >= 0) {
+      this.wheelLost[part.wheelIndex] = false;
+      this.controller.setWheelRadius(part.wheelIndex, this.dims.wheelRadius);
+      this.applyWheelStats();
+      if (!this.wheelLost.includes(true)) {
+        this.collider.setFriction(CHASSIS_FRICTION);
+        this.collider.setFrictionCombineRule(RAPIER.CoefficientCombineRule.Average);
+      }
+    }
+  }
+
   private detach(part: CarPart): void {
     this.partsLost++;
+    this.lostParts.push(part);
+    this.dented.delete(part);
     if (part.wheelIndex >= 0) {
       const i = part.wheelIndex;
       this.wheelLost[i] = true;
@@ -612,6 +968,9 @@ export class Car {
       c.setWheelFrictionSlip(i, 0);
       c.setWheelEngineForce(i, 0);
       c.setWheelSteering(i, 0);
+      // The bare corner scrapes along (Min, so the mud's grip doesn't win): a car on three wheels limps on.
+      this.collider.setFriction(this.stats.rimFriction);
+      this.collider.setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min);
     }
     if (!this.events.onPartDetached) {
       part.mesh.removeFromParent();
@@ -685,6 +1044,7 @@ export class Car {
     b.setLinvel({ x: 0, y: 0, z: 0 }, true);
     b.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.upsideDownTime = 0;
+    this.knockTimer = 0;
     this.capture();
     this.prevPos.copy(this.currPos);
     this.prevRot.copy(this.currRot);
@@ -716,6 +1076,7 @@ export class Car {
     this.physics.removeBody(this.body);
     this.model.root.removeFromParent();
     for (const part of this.model.parts) if (part.mesh.parent) part.mesh.geometry.dispose();
+    for (const spare of this.spares.values()) spare.mesh.geometry.dispose();
   }
 
   private capture(): void {

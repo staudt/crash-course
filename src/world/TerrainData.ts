@@ -9,6 +9,10 @@ export interface TerrainData {
   heights: Float32Array;
   /** Same layout as heights. 0 = firm hardpan, 1 = deep soft sand. */
   softness: Float32Array;
+  /** Optional, same layout: 0..1 how muddy the ground looks (set by carveBowl). */
+  mud?: Float32Array;
+  /** Optional, same layout: 0..1 asphalt (set by carveCircuit; grippier for cars, see CarStats.asphaltGrip). */
+  paved?: Float32Array;
 }
 
 /** Radius (m) of the gentle, firm central arena (small dunes only). */
@@ -168,7 +172,17 @@ export function toRapierHeights(t: TerrainData): Float32Array {
 
 /** Bilinear softness (0 firm .. 1 deep sand) at world (x, z), clamped at the edges. */
 export function sampleSoftness(t: TerrainData, x: number, z: number): number {
-  const { n, size, softness } = t;
+  return sampleGrid(t, t.softness, x, z);
+}
+
+/** 0..1 asphalt at (x, z); 0 where the terrain has no paving. */
+export function samplePaved(t: TerrainData, x: number, z: number): number {
+  return t.paved ? sampleGrid(t, t.paved, x, z) : 0;
+}
+
+/** Bilinear sample of a per-vertex grid (same layout as heights). */
+function sampleGrid(t: TerrainData, grid: Float32Array, x: number, z: number): number {
+  const { n, size } = t;
   const cell = size / (n - 1);
   const gx = Math.min(n - 1, Math.max(0, (x + size / 2) / cell));
   const gz = Math.min(n - 1, Math.max(0, (z + size / 2) / cell));
@@ -176,7 +190,7 @@ export function sampleSoftness(t: TerrainData, x: number, z: number): number {
   const iz = Math.min(n - 2, Math.floor(gz));
   const fx = gx - ix;
   const fz = gz - iz;
-  const a = softness[iz * n + ix]! * (1 - fx) + softness[iz * n + ix + 1]! * fx;
-  const b = softness[(iz + 1) * n + ix]! * (1 - fx) + softness[(iz + 1) * n + ix + 1]! * fx;
+  const a = grid[iz * n + ix]! * (1 - fx) + grid[iz * n + ix + 1]! * fx;
+  const b = grid[(iz + 1) * n + ix]! * (1 - fx) + grid[(iz + 1) * n + ix + 1]! * fx;
   return a * (1 - fz) + b * fz;
 }

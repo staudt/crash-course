@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { TrackPath } from './TrackPath';
-import { DUNE_LOOP } from './tracks';
-import { buildRoadRibbon } from './TrackProps';
+import { CROSSOVER, DUNE_LOOP } from './tracks';
+import { buildRoadRibbon, buildStationMarkings, gatePostOffsets } from './TrackProps';
+import { TRACK_WALL_CONFIG, trackWallBlocks } from '../world/TrackWalls';
 
 const path = new TrackPath(DUNE_LOOP);
 for (let i = 0; i < path.count; i++) path.elevation[i] = Math.sin(i * 0.01) * 5;
@@ -67,5 +68,61 @@ describe('buildRoadRibbon', () => {
     };
     for (let t = 0; t < tris; t += 37) check(t);
     for (let t = tris - 36; t < tris; t++) check(t);
+  });
+});
+
+describe('buildStationMarkings', () => {
+  const { positions, indices } = buildStationMarkings(path, 15);
+
+  it('paints every gate, upward-facing quads only', () => {
+    expect(indices.length % 6).toBe(0);
+    expect(Math.max(...indices)).toBe(positions.length / 3 - 1);
+    // Per gate: 15 edge segments a side, 2 end bars, 3 plus-sign pieces.
+    expect(indices.length / 6).toBe(path.checkpoints.length * (2 * 15 + 2 + 3));
+    for (let k = 0; k < indices.length; k += 3) {
+      const v = [0, 1, 2].map((j) => indices[k + j]! * 3);
+      const [a, b, c] = v.map((i) => [positions[i]!, positions[i + 1]!, positions[i + 2]!]);
+      // Cross product y of (b - a) x (c - a) > 0: the triangle faces up.
+      const ny = (b![2]! - a![2]!) * (c![0]! - a![0]!) - (b![0]! - a![0]!) * (c![2]! - a![2]!);
+      expect(ny).toBeGreaterThan(0);
+    }
+  });
+
+  it('stays on the road, just above it', () => {
+    for (let i = 0; i < positions.length; i += 3) {
+      const p = path.project(positions[i]!, positions[i + 2]!);
+      expect(p.distance).toBeLessThanOrEqual(hw + 1e-3);
+      expect(positions[i + 1]! - path.heightAt(p.s)).toBeCloseTo(0.1, 0);
+    }
+  });
+});
+
+describe('gatePostOffsets', () => {
+  it('stands the posts beside the road on open tracks, and behind the walls on walled ones', () => {
+    const open = new TrackPath(DUNE_LOOP);
+    for (const [l, r] of gatePostOffsets(open)) expect([l, r]).toEqual([open.halfWidth + 2.5, open.halfWidth + 2.5]);
+    const walled = new TrackPath(CROSSOVER);
+    const blocks = trackWallBlocks(walled);
+    const p = { x: 0, z: 0 };
+    const t = { x: 0, z: 0 };
+    gatePostOffsets(walled).forEach(([left, right], k) => {
+      const s = walled.checkpoints[k]!;
+      walled.pointAt(s, p);
+      walled.tangentAt(s, t);
+      for (const [side, off] of [[1, left], [-1, right]] as const) {
+        // The nearest wall block on that side is closer to the road than the post, by more than half its thickness.
+        let best = Infinity;
+        let wall = 0;
+        for (const b of blocks) {
+          const l = (b.x - p.x) * t.z - (b.z - p.z) * t.x;
+          const d = Math.hypot(b.x - p.x, b.z - p.z);
+          if (Math.sign(l) === side && d < best) {
+            best = d;
+            wall = Math.abs(l);
+          }
+        }
+        expect(off - wall).toBeGreaterThan(TRACK_WALL_CONFIG.thickness / 2 + 0.35);
+      }
+    });
   });
 });

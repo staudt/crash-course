@@ -37,13 +37,16 @@ function mulberry32(seed: number): () => number {
 export type RoadDistanceFn = (x: number, z: number) => number;
 
 export class Rocks {
-  /** `roadHalfWidth` + `roadDistance` keep rock lines well clear of the road; lone boulders may sit on the shoulder. */
-  constructor(scene: THREE.Scene, physics: Physics, terrain: Terrain, seed = 7, roadDistance: RoadDistanceFn = () => Infinity, roadHalfWidth = 0) {
+  /**
+   * `roadHalfWidth` + `roadDistance` keep rock lines well clear of the road; lone boulders may sit on the shoulder.
+   * `maxRadius` limits the scatter (for smaller worlds), keeping the same density.
+   */
+  constructor(scene: THREE.Scene, physics: Physics, terrain: Terrain, seed = 7, roadDistance: RoadDistanceFn = () => Infinity, roadHalfWidth = 0, maxRadius = CONFIG.maxRadius) {
     const rand = mulberry32(seed);
     const range = (a: number, b: number) => a + rand() * (b - a);
 
     const geos = Array.from({ length: CONFIG.variants }, (_, i) => this.makeGeometry(rand, i % 3 === 2 ? 1 : 0));
-    const placements = this.layout(terrain, rand, range, roadDistance, roadHalfWidth);
+    const placements = this.layout(terrain, rand, range, roadDistance, roadHalfWidth, maxRadius);
 
     const material = new THREE.MeshStandardMaterial({ color: CONFIG.color, flatShading: true, roughness: 0.95 });
     const body = physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -119,13 +122,15 @@ export class Rocks {
     range: (a: number, b: number) => number,
     roadDistance: RoadDistanceFn,
     roadHalfWidth: number,
+    maxRadius: number,
   ): Placement[] {
     const out: Placement[] = [];
+    const density = (maxRadius / CONFIG.maxRadius) ** 2;
     const euler = new THREE.Euler();
     let clearance = CONFIG.lineClearance;
     const place = (x: number, z: number, size: number) => {
       const r = Math.hypot(x, z);
-      if (r < CONFIG.keepOut + size || r > CONFIG.maxRadius) return;
+      if (r < CONFIG.keepOut + size || r > maxRadius) return;
       if (roadDistance(x, z) < roadHalfWidth + clearance + size) return;
       const sy = size * range(0.8, 1.2);
       const scale = new THREE.Vector3(size * range(0.85, 1.25), sy, size * range(0.85, 1.25));
@@ -139,9 +144,10 @@ export class Rocks {
       });
     };
 
-    for (let l = 0; l < CONFIG.lines; l++) {
-      const a = (l / CONFIG.lines) * Math.PI * 2 + range(-0.3, 0.3);
-      const dist = CONFIG.maxRadius * Math.sqrt(range(0.01, 1)); // uniform over the disc
+    const lines = Math.ceil(CONFIG.lines * density);
+    for (let l = 0; l < lines; l++) {
+      const a = (l / lines) * Math.PI * 2 + range(-0.3, 0.3);
+      const dist = maxRadius * Math.sqrt(range(0.01, 1)); // uniform over the disc
       let x = Math.cos(a) * dist;
       let z = Math.sin(a) * dist;
       let heading = range(0, Math.PI * 2);
@@ -158,9 +164,10 @@ export class Rocks {
       }
     }
     clearance = CONFIG.boulderClearance;
-    for (let b = 0; b < CONFIG.boulders; b++) {
+    const boulders = Math.ceil(CONFIG.boulders * density);
+    for (let b = 0; b < boulders; b++) {
       const a = range(0, Math.PI * 2);
-      const d = CONFIG.maxRadius * Math.sqrt(range(0.005, 1));
+      const d = maxRadius * Math.sqrt(range(0.005, 1));
       place(Math.cos(a) * d, Math.sin(a) * d, range(0.7, 2));
     }
     return out;

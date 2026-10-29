@@ -1,12 +1,15 @@
 import * as THREE from 'three';
 import { createNoise2D } from 'simplex-noise';
 import { RAPIER, type Physics } from '../core/Physics';
-import { sampleHeight, sampleSoftness, toRapierHeights, type TerrainData } from './TerrainData';
+import { sampleHeight, samplePaved, sampleSoftness, toRapierHeights, type TerrainData } from './TerrainData';
 
 const SAND_LIT = new THREE.Color('#e57c3e');
 const SAND_SHADOW = new THREE.Color('#a9461d');
 const SAND_RIM = new THREE.Color('#f39a5c');
 const HARDPAN = new THREE.Color('#d98f60');
+const MUD_LIT = new THREE.Color('#98683f');
+const MUD_SHADOW = new THREE.Color('#6a4629');
+const MUD_WET = new THREE.Color('#563820');
 /** Direction toward the sun, used only to bake slope shading into vertex colours. */
 const SUN_DIR = new THREE.Vector3(45, 70, 10).normalize();
 /** Cells per side of each render tile, so tiles off-screen (and outside the shadow camera) are culled. */
@@ -49,6 +52,11 @@ export class Terrain {
 
   softnessAt(x: number, z: number): number {
     return sampleSoftness(this.data, x, z);
+  }
+
+  /** 0..1 asphalt (paved circuits only). */
+  pavedAt(x: number, z: number): number {
+    return samplePaved(this.data, x, z);
   }
 
   private buildGeometry(): THREE.BufferGeometry {
@@ -164,6 +172,15 @@ export class Terrain {
         const firm = 1 - THREE.MathUtils.smoothstep(softness[i]!, 0.1, 0.5);
         const hard = HARDPAN.clone().multiplyScalar(0.8 + lit * 0.25);
         c.lerp(hard, firm * 0.6);
+
+        const mudW = this.data.mud?.[i] ?? 0;
+        if (mudW > 0) {
+          const m = MUD_SHADOW.clone().lerp(MUD_LIT, lit);
+          // Low-frequency darker wet patches.
+          const wet = THREE.MathUtils.smoothstep(noise(x * 0.035 + 50, z * 0.035 - 20), 0.05, 0.6);
+          m.lerp(MUD_WET, wet * 0.5);
+          c.lerp(m, mudW);
+        }
 
         c.multiplyScalar(0.95 + noise(x * 0.05, z * 0.05) * 0.04 + noise(x * 0.4, z * 0.4) * 0.03);
         colors[i * 3] = c.r;

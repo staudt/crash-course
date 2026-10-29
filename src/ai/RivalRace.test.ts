@@ -17,7 +17,7 @@ beforeAll(async () => {
 });
 
 describe('Rivals racing the Dune Loop', () => {
-  it('five AI personalities race a lap from a grid: they fight, but everyone finishes', () => {
+  it('five AI personalities race a lap from a grid with no rescues: they fight, pit, and nearly all finish', () => {
     const path = new TrackPath(DUNE_LOOP);
     const data = generateTerrain({ n: 769, size: 2048 });
     buildElevation(path, data);
@@ -39,8 +39,8 @@ describe('Rivals racing the Dune Loop', () => {
         const victim = racers.find((r) => r.car === felt);
         const attacker = racers.findIndex((r) => r.car === other);
         if (!victim || attacker < 0) return;
-        if (!wasHit(motion(felt), motion(other))) {
-          victim.driver.rammed(attacker);
+        if (victim.driver.target === attacker || !wasHit(motion(felt), motion(other))) {
+          victim.driver.rammed(attacker, impact);
           return;
         }
         victim.driver.provoke(attacker, impact);
@@ -70,7 +70,9 @@ describe('Rivals racing the Dune Loop', () => {
       race: new Race(path),
       prev: { x: 0, z: 0 },
       lapTime: 0,
-      rescues: 0,
+      out: '' as '' | 'wrecked' | 'stuck',
+      stall: { best: 0, time: 0 },
+      repaired: 0,
       worstDamage: 0,
     }));
     for (const r of racers) {
@@ -79,17 +81,22 @@ describe('Rivals racing the Dune Loop', () => {
     }
     const fwd = new THREE.Vector3();
     const dt = physics.dt;
-    for (let step = 0; step < 60 * 260 && racers.some((r) => !r.lapTime); step++) {
+    for (let step = 0; step < 60 * 260 && racers.some((r) => !r.lapTime && !r.out); step++) {
       for (const r of racers) {
-        if (r.race.phase !== 'racing') continue;
+        if (r.race.phase !== 'racing' || r.out || r.lapTime) {
+          r.car.input.throttle = 0;
+          r.car.input.brake = 1;
+          continue;
+        }
         const t = r.car.body.translation();
         r.car.forward(fwd).setY(0).normalize();
         const others = racers.filter((o) => o !== r).map((o) => {
           const q = o.car.body.translation();
           const v = o.car.body.linvel();
-          return { id: racers.indexOf(o), x: q.x, z: q.z, vx: v.x, vz: v.z, ahead: o.race.progress - r.race.progress, offTrack: o.race.distance };
+          return { id: racers.indexOf(o), x: q.x, z: q.z, vx: v.x, vz: v.z, ahead: o.race.progress - r.race.progress, offTrack: o.race.distance, lateral: o.race.lateral, out: !!o.out };
         });
-        r.driver.drive({ x: t.x, z: t.z, fx: fwd.x, fz: fwd.z, speed: r.car.forwardSpeed }, others, 0, dt, r.car.input);
+        const self = { x: t.x, z: t.z, fx: fwd.x, fz: fwd.z, speed: r.car.forwardSpeed, health: r.car.health / r.car.stats.maxHealth, pastGate: r.race.pastNextGate };
+        r.driver.drive(self, others, 0, dt, r.car.input);
       }
       for (const r of racers) if (r.driver.target !== null) fights.add(`${r.driver.profile.name}→${racers[r.driver.target]!.driver.profile.name}`);
       for (const r of racers) r.car.fixedUpdate(dt);
@@ -100,33 +107,34 @@ describe('Rivals racing the Dune Loop', () => {
         for (const e of r.race.update(dt, r.prev, t, r.car.body.linvel())) if (e.type === 'lap' && !r.lapTime) r.lapTime = e.time;
         r.prev = { x: t.x, z: t.z };
         r.worstDamage = Math.max(r.worstDamage, 1 - r.car.health / r.car.stats.maxHealth);
-        if (r.race.phase === 'racing' && r.driver.needsRescue(r.car.speed, r.car.wrecked, dt, r.race.pastNextGate)) {
-          // Same free-spot rule as RaceDirector.respawn.
-          let p = r.race.respawnPose();
-          let lane = 0;
-          for (const lateral of [0, 4, -4, 6.5, -6.5]) {
-            p = r.race.respawnPose(lateral);
-            lane = lateral;
-            if (racers.every((o) => o === r || Math.hypot(o.car.body.translation().x - p.x, o.car.body.translation().z - p.z) > 6)) break;
-          }
-          r.car.dispose();
-          r.car = spawn(path.project(p.x, p.z).s, lane, r.driver.profile);
-          r.driver.reset();
-          r.prev = { x: p.x, z: p.z };
-          r.rescues++;
+        if (r.race.phase !== 'racing' || r.out || r.lapTime) continue;
+        // Same rules as RaceDirector: repairs in stations, no rescues, wrecks and stalled cars retire.
+        if (r.race.repairStation >= 0 && r.car.damaged) {
+          const before = r.car.health;
+          r.car.repair(dt);
+          r.repaired += r.car.health - before;
         }
+        if (r.car.wrecked) r.out = 'wrecked';
+        if (r.race.progress > r.stall.best + 20) r.stall = { best: r.race.progress, time: 0 };
+        else if ((r.stall.time += dt) > 45) r.out = 'stuck';
       }
     }
-    const summary = racers.map((r) => `${r.driver.profile.name}: ${r.lapTime.toFixed(1)} s, ${r.rescues} rescues, ${(r.worstDamage * 100).toFixed(0)}% damage`).join('\n') + `\nhits: ${hits}, fights: ${[...fights].join(', ')}`;
-    // Every rival finishes, mostly without help, despite the fighting.
+    const summary =
+      racers.map((r) => `${r.driver.profile.name}: ${r.out ? r.out.toUpperCase() : `${r.lapTime.toFixed(1)} s`}, ${(r.worstDamage * 100).toFixed(0)}% worst damage, ${r.repaired.toFixed(0)} hp repaired`).join('\n') +
+      `\nhits: ${hits}, fights: ${[...fights].join(', ')}`;
+    // Feuds knock someone out now and then (measured: Viper, ganged up on by Scorpion and Rusty, wrecked), but at most
+    // one car a lap, and never a healthy car stuck for good.
     for (const r of racers) {
+      if (r.out === 'stuck') expect(r.worstDamage, summary).toBeGreaterThan(0.8);
+      if (r.out) continue;
       expect(r.lapTime, summary).toBeGreaterThan(150);
-      expect(r.lapTime, summary).toBeLessThan(230);
-      expect(r.rescues, summary).toBeLessThanOrEqual(1);
-      expect(r.worstDamage, summary).toBeLessThan(0.5);
+      expect(r.lapTime, summary).toBeLessThan(240);
     }
+    expect(racers.filter((r) => r.out).length, summary).toBeLessThanOrEqual(1);
+    // Cars pick up repairs in the stations (how much depends on where the crashes happen; pitting itself is unit-tested).
+    expect(racers.some((r) => r.repaired > 0), summary).toBe(true);
     // Personalities show: the bully starts something, and someone fights back or holds a grudge.
     expect(hits, summary).toBeGreaterThan(0);
-    expect(fights.size, summary).toBeGreaterThan(1);
+    expect(fights.size, summary).toBeGreaterThan(3);
   }, 180_000);
 });

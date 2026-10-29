@@ -31,6 +31,25 @@ export interface TrackDef {
    * corner `from`'s arc to the middle of corner `to`'s arc in driving order.
    */
   sand?: [number, number][];
+  /** Where s = 0 (the start/finish line) sits along the straight from corner 0 to corner 1, as a fraction of it (default 0.5). */
+  start?: number;
+  /** Checkpoint positions as fractions of the lap, the first being 0 (default: `checkpoints` evenly spaced). */
+  checkpointAt?: number[];
+  /** Checkpoints that have a repair station (default: all of them). */
+  stations?: number[];
+  /** 'asphalt': a paved road with much more grip (CarStats asphaltGrip/asphaltSlip), painted lines, no marker stakes. Default 'sand'. */
+  surface?: 'sand' | 'asphalt';
+  /** Concrete walls along both sides: gaps (m) from the road edge on straights, and on the inside / outside of bends (see TrackWalls). */
+  walls?: { straight: number; inside: number; outside: number };
+  /** Laps in a race (default DIRECTOR_CONFIG.laps). */
+  laps?: number;
+  /** Parked cars beside the road (default DIRECTOR_CONFIG.parkedCount). */
+  parked?: number;
+  /**
+   * How the player is guided: 'bends' (default) = the guide arrow previewing the bends ahead; 'checkpoints' =
+   * a beacon on the next checkpoint instead (a short track where every bend is in sight anyway).
+   */
+  guide?: 'bends' | 'checkpoints';
 }
 
 /** One rounded corner, as laid out along the track. */
@@ -57,6 +76,9 @@ export interface Projection {
 
 const SAMPLE_STEP = 2;
 const LOCAL_WINDOW = 60;
+/** A car more than this far (m) off the edge of the stretch it's on, and SWITCH_MARGIN m closer to another stretch, is on that one now. */
+const SWITCH_OFF_ROAD = 1;
+const SWITCH_MARGIN = 4;
 /** Length (m) of the blend between road and open sand. */
 const SAND_RAMP = 30;
 
@@ -136,7 +158,9 @@ export class TrackPath {
       }
       base += p.len;
     }
-    for (let c = 0; c < def.checkpoints; c++) this.checkpoints.push((c / def.checkpoints) * total);
+    const at = def.checkpointAt ?? Array.from({ length: def.checkpoints }, (_, c) => c / def.checkpoints);
+    if (at.length !== def.checkpoints || at[0] !== 0) throw new Error(`${def.id}: checkpointAt must list ${def.checkpoints} lap fractions starting at 0`);
+    for (const f of at) this.checkpoints.push(f * total);
 
     this.sandiness = new Float64Array(n);
     const mid = (corner: number) => {
@@ -186,6 +210,34 @@ export class TrackPath {
     return { distance: best, turn, radius };
   }
 
+  /** Paved (asphalt) track. */
+  get paved(): boolean {
+    return this.def.surface === 'asphalt';
+  }
+
+  /** Whether checkpoint i has a repair station. */
+  hasStation(i: number): boolean {
+    return this.def.stations?.includes(i) ?? true;
+  }
+
+  /** Index of the sample at or before s (a `project` hint for a car known to be at s). */
+  indexAt(s: number): number {
+    return this.locate(s)[0];
+  }
+
+  /**
+   * Distance from (x, z) to the centreline, ignoring the stretch within `window` m of s along it:
+   * how close some *other* part of the track comes (e.g. the road crossing this one).
+   */
+  distanceElsewhere(x: number, z: number, s: number, window: number): number {
+    const best: Projection = { s: 0, lateral: 0, distance: Infinity, index: 0 };
+    for (let i = 0; i < this.count; i++) {
+      const u = this.wrap(i * this.step - s);
+      if (Math.min(u, this.length - u) > window) this.projectOnto(i, x, z, best);
+    }
+    return best.distance;
+  }
+
   /** 0 = packed road .. 1 = open sand at s. */
   sandAt(s: number): number {
     const [i, j, f] = this.locate(s);
@@ -232,7 +284,8 @@ export class TrackPath {
 
   /**
    * Nearest point on the centreline. With a `hint` (the previous result's index) it searches
-   * locally first, which keeps the answer continuous where two parts of the track run close.
+   * locally first, which keeps the answer continuous where two parts of the track run close (and
+   * across the crossing of a figure 8), until the car is off the road and clearly on another stretch.
    */
   project(x: number, z: number, hint = -1): Projection {
     const n = this.count;
@@ -241,7 +294,14 @@ export class TrackPath {
       for (let o = -LOCAL_WINDOW; o <= LOCAL_WINDOW; o++) this.projectOnto((((hint + o) % n) + n) % n, x, z, best);
       // Trust the local answer unless the car has wandered far from this stretch of road.
       const edge = Math.abs(best.index - hint) % n;
-      if (best.distance < 40 && Math.min(edge, n - edge) < LOCAL_WINDOW - 2) return best;
+      if (best.distance < 40 && Math.min(edge, n - edge) < LOCAL_WINDOW - 2) {
+        if (best.distance <= this.halfWidth + SWITCH_OFF_ROAD) return best;
+        // Off this road: if it's clearly on another stretch (spun round at a crossing), follow that one instead.
+        const local = best;
+        best = { s: 0, lateral: 0, distance: Infinity, index: 0 };
+        for (let i = 0; i < n; i++) this.projectOnto(i, x, z, best);
+        return best.distance < local.distance - SWITCH_MARGIN ? best : local;
+      }
       best = { s: 0, lateral: 0, distance: Infinity, index: 0 };
     }
     for (let i = 0; i < n; i++) this.projectOnto(i, x, z, best);
@@ -311,13 +371,14 @@ function layOut(def: TrackDef): Piece[] {
     const arcLen = Math.abs(t) * b.r;
     if (arcLen > 1e-6) pieces.push({ len: arcLen, k: Math.sign(t) / b.r, x: b.x - dx * reach[j]!, z: b.z - dz * reach[j]!, h, corner: j });
   }
-  // Split the first straight so s = 0 is its midpoint.
+  // Split the first straight so s = 0 is at def.start along it (its midpoint by default).
   const first = pieces[0]!;
-  const half = first.len / 2;
-  const tail: Piece = { ...first, len: half, jump: first.jump === undefined ? undefined : first.jump * 2 };
-  const head: Piece = { ...first, len: half, x: first.x + Math.sin(first.h) * half, z: first.z + Math.cos(first.h) * half, jump: undefined };
-  if (first.jump !== undefined && first.jump > 0.5) {
-    head.jump = (first.jump - 0.5) * 2;
+  const f = def.start ?? 0.5;
+  const before = first.len * f;
+  const tail: Piece = { ...first, len: before, jump: first.jump === undefined ? undefined : first.jump / f };
+  const head: Piece = { ...first, len: first.len - before, x: first.x + Math.sin(first.h) * before, z: first.z + Math.cos(first.h) * before, jump: undefined };
+  if (first.jump !== undefined && first.jump > f) {
+    head.jump = (first.jump - f) / (1 - f);
     tail.jump = undefined;
   }
   return [head, ...pieces.slice(1), tail];

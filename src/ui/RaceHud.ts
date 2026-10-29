@@ -21,6 +21,8 @@ export interface RaceHudState {
   totalLaps?: number;
   /** Minimap markers for the other cars (world x/z, CSS colour). */
   opponents?: { x: number; z: number; color: string }[];
+  /** Repairing in a station: the car's health 0..1. */
+  repair?: { health: number } | null;
 }
 
 export interface ResultRow {
@@ -54,6 +56,12 @@ export function formatDelta(seconds: number): string {
   const r = Math.round(seconds * 100) / 100;
   const neg = r < 0;
   return `${neg ? '-' : '+'}${Math.abs(r).toFixed(2)}`;
+}
+
+/** The repair line while in a station: "REPAIRING · 64%". */
+export function repairLabel(repair: RaceHudState['repair']): { text: string; color: string } | null {
+  if (!repair) return null;
+  return { text: `REPAIRING · ${Math.floor(Math.min(1, Math.max(0, repair.health)) * 100)}%`, color: '#36d17a' };
 }
 
 /** 1 → "1st", 2 → "2nd", 3 → "3rd", 11 → "11th", 21 → "21st". */
@@ -96,6 +104,8 @@ export class RaceHud {
   private readonly notice: HTMLDivElement;
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly big: HTMLDivElement;
+  private readonly repair: HTMLDivElement;
+  private lastRepair = '';
   private readonly lapBox: HTMLDivElement;
   private readonly lapText: HTMLDivElement;
   private readonly lapBest: HTMLDivElement;
@@ -153,6 +163,7 @@ export class RaceHud {
       'position:absolute;left:0;right:0;top:22%;text-align:center;font-size:clamp(28px,8vw,64px);font-weight:900;letter-spacing:0.06em;color:#ff3b30;display:none;animation:racehud-blink 0.7s steps(2,jump-none) infinite;',
       'WRONG WAY',
     );
+    this.repair = el(root, 'position:absolute;left:0;right:0;top:30%;text-align:center;font-size:clamp(18px,4.5vw,32px);font-weight:900;letter-spacing:0.05em;font-variant-numeric:tabular-nums;display:none;');
 
     this.root = root;
     this.posBox = el(root, 'position:absolute;left:16px;top:12px;line-height:1;white-space:nowrap;display:none;');
@@ -278,6 +289,17 @@ export class RaceHud {
     if (wrong !== this.lastWrong) {
       this.lastWrong = wrong;
       this.wrong.style.display = wrong ? 'block' : 'none';
+    }
+
+    const fix = this.resultsVisible ? null : repairLabel(state.repair);
+    const fixKey = fix ? `${fix.text}|${fix.color}` : '';
+    if (fixKey !== this.lastRepair) {
+      this.lastRepair = fixKey;
+      this.repair.style.display = fix ? 'block' : 'none';
+      if (fix) {
+        this.repair.textContent = fix.text;
+        this.repair.style.color = fix.color;
+      }
     }
 
     this.drawMap(state, now);

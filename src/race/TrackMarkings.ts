@@ -11,6 +11,25 @@ const CONFIG = {
     yellow: '#ffd23f',
     black: '#1d1d1f',
   },
+  /** Painted lines and kerbs on paved tracks. */
+  paved: {
+    lineWidth: 0.35,
+    lineInset: 0.3,
+    line: '#f2f0ea',
+    dash: 3,
+    gap: 4.5,
+    kerbWidth: 1.2,
+    kerbLength: 2,
+    kerbRed: '#d8432f',
+    kerbWhite: '#f2f0ea',
+    kerbRadius: 60,
+    /** Paint is skipped within halfWidth + this of another part of the track. */
+    crossMargin: 0.5,
+    /** Ignore the stretch of track this close along it when looking for a crossing road. */
+    crossWindow: 40,
+    /** Paint pieces are at most this long. */
+    piece: 2,
+  },
   /** Decal height above the road surface, and the max distance between vertex rows. */
   lift: 0.1,
   maxStep: 2,
@@ -80,10 +99,61 @@ function decalMaterial(extra: THREE.MeshLambertMaterialParameters): THREE.MeshLa
   });
 }
 
+/** Pure: painted edge lines, centre dashes and bend kerbs of a paved track as decal triangles (empty for sand tracks). Pieces that touch another part of the track (the crossing of a figure-8) are left out. */
+export function pavedMarkings(path: TrackPath): { pos: number[]; col: number[] } {
+  const out = { pos: [] as number[], col: [] as number[] };
+  if (!path.paved) return out;
+  const c = CONFIG.paved;
+  const hw = path.halfWidth;
+  const d = new DecalBuilder(path, 0);
+  const p = { x: 0, z: 0 };
+  const t = { x: 0, z: 0 };
+  const clear = (s: number, v: number): boolean => {
+    path.pointAt(s, p);
+    path.tangentAt(s, t);
+    return path.distanceElsewhere(p.x + t.z * v, p.z - t.x * v, s, c.crossWindow) > hw + c.crossMargin;
+  };
+  /** Paints [u0, u1] at lateral [v0, v1] in pieces, each only if clear of other road. */
+  const strip = (u0: number, u1: number, v0: number, v1: number, color: string): void => {
+    const n = Math.max(1, Math.ceil((u1 - u0) / c.piece));
+    for (let i = 0; i < n; i++) {
+      const a = u0 + ((u1 - u0) * i) / n, b = u0 + ((u1 - u0) * (i + 1)) / n;
+      const v = (v0 + v1) / 2;
+      if (clear(a, v) && clear((a + b) / 2, v) && clear(b, v)) d.rect(a, b, v0, v1, color);
+    }
+  };
+  const L = path.length;
+  const edge = hw - c.lineInset;
+  for (const side of [-1, 1]) strip(0, L, side * Math.min(edge, edge - c.lineWidth), side * Math.max(edge, edge - c.lineWidth), c.line);
+  for (let u = 0; u + c.dash <= L; u += c.dash + c.gap) strip(u, u + c.dash, -c.lineWidth / 2, c.lineWidth / 2, c.line);
+  for (const b of path.bends) {
+    if (b.radius >= c.kerbRadius) continue;
+    const side = b.turn > 0 ? 1 : -1;
+    const v0 = side * (hw - c.kerbWidth / 2), v1 = side * (hw + c.kerbWidth / 2);
+    const n = Math.max(1, Math.round((b.end - b.start) / c.kerbLength));
+    for (let i = 0; i < n; i++) {
+      const a = b.start + ((b.end - b.start) * i) / n, e = b.start + ((b.end - b.start) * (i + 1)) / n;
+      strip(a, e, Math.min(v0, v1), Math.max(v0, v1), i % 2 === 0 ? c.kerbRed : c.kerbWhite);
+    }
+  }
+  out.pos = d.pos;
+  out.col = d.col;
+  return out;
+}
+
 /** Jump hazard stripes across the lip and yellow edge lines up the ramp. Visual only. */
 export class TrackMarkings {
   constructor(scene: THREE.Scene, private readonly path: TrackPath) {
     this.buildJumps(scene, jumpSpots(path));
+    this.buildPaved(scene);
+  }
+
+  private buildPaved(scene: THREE.Scene): void {
+    const { pos, col } = pavedMarkings(this.path);
+    if (pos.length === 0) return;
+    const mesh = new THREE.Mesh(toGeometry(pos, col), decalMaterial({ vertexColors: true }));
+    mesh.receiveShadow = true;
+    scene.add(mesh);
   }
 
   private buildJumps(scene: THREE.Scene, jumps: number[]): void {

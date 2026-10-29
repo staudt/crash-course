@@ -1,4 +1,4 @@
-import type { TrackDef } from './TrackPath';
+import type { Corner, TrackDef } from './TrackPath';
 
 /**
  * "Dune Loop": the first circuit. Mixed character: a long start straight, fast sweepers,
@@ -41,4 +41,63 @@ export const DUNE_LOOP: TrackDef = {
     { x: -500, z: -100, r: 180 },
     { x: -750, z: -400, r: 100 },
   ],
+};
+
+/**
+ * Corners of a figure 8: two straights crossing at the origin, joined at each end by a lobe of
+ * `radius` around (±lobeX, 0). Each lobe is `perLobe` corners of one circumscribed polygon, rounded
+ * with arcs slightly tighter than the circle so the straights between them stay positive.
+ * Corner 0 → 1 is the straight from the left lobe to the right one (heading +X); the right lobe
+ * turns left and the left one right. Also returns the lap fractions of the two mid-lobe apexes.
+ */
+export function figureEight(lobeX: number, radius: number, perLobe = 3): { corners: Corner[]; apex: [number, number]; start: number } {
+  const theta = Math.asin(radius / lobeX);
+  const delta = (Math.PI + 2 * theta) / perLobe;
+  const rho = radius / Math.cos(delta / 2);
+  const r = radius - 0.5;
+  // Heading h faces (sin h, cos h); the left normal is (cos h, -sin h).
+  const hA = Math.PI / 2 - theta;
+  const hB = theta - Math.PI / 2;
+  const right: Corner[] = [];
+  const left: Corner[] = [];
+  for (let j = 0; j < perLobe; j++) {
+    const m = hA + (j + 0.5) * delta; // turning left: the centre is on the left
+    right.push({ x: lobeX - rho * Math.cos(m), z: rho * Math.sin(m), r });
+    const n = hB - (j + 0.5) * delta; // turning right: the centre is on the right
+    left.push({ x: -lobeX + rho * Math.cos(n), z: -rho * Math.sin(n), r });
+  }
+  const corners = [left[perLobe - 1]!, ...right, ...left.slice(0, perLobe - 1)];
+  // Lap fractions (the layout is point-symmetric, so the second half repeats the first).
+  const reach = r * Math.tan(delta / 2);
+  const straight = 2 * Math.hypot(right[0]!.x, right[0]!.z) - 2 * reach;
+  const lobe = perLobe * r * delta + (perLobe - 1) * (2 * rho * Math.sin(delta / 2) - 2 * reach);
+  const lap = 2 * straight + 2 * lobe;
+  // s = 0 midway from the crossing to the right lobe; its apex is a quarter-straight plus half a lobe on.
+  const apex = (straight / 4 + lobe / 2) / lap;
+  return { corners, apex: [apex, 0.5 + apex], start: 0.75 };
+}
+
+const EIGHT = figureEight(82, 28);
+
+/**
+ * "Crossover": a short asphalt figure 8 (234 m end to end, 524 m a lap). Two fast 155 m straights cross
+ * in the middle at 40° (at grade: cross traffic), with walls close along them so the only way through
+ * is over the crossing, and a run-off on the outside of the two tight (28 m) loops.
+ * Checkpoints: midway from the crossing to each loop (the start/finish is on the first), and each
+ * loop's apex, so nobody can U-turn back through the crossing.
+ */
+export const CROSSOVER: TrackDef = {
+  id: 'crossover',
+  name: 'Crossover',
+  halfWidth: 7,
+  corners: EIGHT.corners,
+  start: EIGHT.start,
+  checkpoints: 4,
+  checkpointAt: [0, EIGHT.apex[0], 0.5, EIGHT.apex[1]],
+  stations: [0, 2],
+  surface: 'asphalt',
+  walls: { straight: 3, inside: 3, outside: 9 },
+  laps: 5,
+  parked: 0,
+  guide: 'checkpoints',
 };

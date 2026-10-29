@@ -36,6 +36,22 @@ function drive(race: Race, s0: number, speed: number, seconds: number, lateral =
 }
 
 describe('Race', () => {
+  it('knows when the car is in a checkpoint repair station', () => {
+    const race = new Race(path);
+    drive(race, -10, 0, RACE_CONFIG.countdown + dt);
+    const cp1 = path.checkpoints[1]!;
+    drive(race, cp1 - 40, 10, 0.1);
+    expect(race.repairStation).toBe(-1);
+    drive(race, cp1 - 10, 1, 0.1);
+    expect(race.repairStation).toBe(1);
+    drive(race, cp1 + 12, 1, 0.1, path.halfWidth);
+    expect(race.repairStation).toBe(1);
+    drive(race, cp1 + 5, 1, 0.1, path.halfWidth + RACE_CONFIG.repairMargin + 1);
+    expect(race.repairStation).toBe(-1);
+    drive(race, path.length - 5, 1, 0.1);
+    expect(race.repairStation).toBe(0);
+  });
+
   it('counts down, then GO starts the lap timer', () => {
     const race = new Race(path);
     const { events } = drive(race, -10, 0, RACE_CONFIG.countdown + 0.5);

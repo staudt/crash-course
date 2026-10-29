@@ -1,3 +1,6 @@
+import type { DamageReport } from '../vehicle/DamageReport';
+import { DamageDiagram } from './DamageDiagram';
+
 export interface HudState {
   speedKmh: number;
   /** 0..1 */
@@ -5,6 +8,8 @@ export interface HudState {
   partsLost: number;
   /** Boost bar 0..1 (the bar is hidden while undefined). */
   boost?: number;
+  /** Damage map of the car (the diagram is hidden while undefined). */
+  damage?: DamageReport;
   /** Boost held and active this frame. */
   boosting?: boolean;
   /** Ran dry: locked until it recharges a little. */
@@ -39,6 +44,8 @@ export class Hud {
   private readonly speed: HTMLDivElement;
   private readonly bar: HTMLDivElement;
   private readonly parts: HTMLDivElement;
+  private readonly diagram: DamageDiagram;
+  private diagramShown = true;
   private readonly hint: HTMLDivElement;
   private readonly message: HTMLDivElement;
   private messageTimer: ReturnType<typeof setTimeout> | undefined;
@@ -52,13 +59,17 @@ export class Hud {
   private lastBoost = -1;
   private lastLook = '';
 
-  constructor(container: HTMLElement) {
+  /** `controls`: the level's own keys for the hint, e.g. 'R: back to checkpoint · Enter: restart'. */
+  constructor(container: HTMLElement, controls: string) {
     const root = el(
       container,
       `position:absolute;inset:0;pointer-events:none;overflow:hidden;color:#fff;font-family:${FONT};text-shadow:${SHADOW};user-select:none;`,
     );
 
-    const box = el(root, 'position:absolute;left:16px;bottom:16px;width:min(220px,50vw);');
+    // Bottom-left: the damage map, then speed, health and parts lost beside it.
+    const corner = el(root, 'position:absolute;left:16px;bottom:16px;display:flex;align-items:flex-end;gap:10px;');
+    this.diagram = new DamageDiagram(corner);
+    const box = el(corner, 'width:min(220px,40vw);');
     const row = el(box, 'display:flex;align-items:baseline;gap:8px;');
     this.speed = el(row, 'font-size:clamp(36px,9vw,64px);line-height:1;font-weight:900;font-variant-numeric:tabular-nums;', '0');
     el(row, 'font-size:clamp(12px,3vw,18px);font-weight:700;opacity:0.9;', 'km/h');
@@ -69,7 +80,7 @@ export class Hud {
     this.hint = el(
       root,
       'position:absolute;right:16px;bottom:16px;max-width:min(340px,30vw);text-align:right;font-size:clamp(10px,2.4vw,14px);font-weight:700;transition:opacity 1.5s;',
-      'WASD / arrows: drive · Space: handbrake · Shift: boost · R: back to checkpoint · Enter: restart · T: race / time trial · C: camera · `: tuning',
+      `WASD / arrows: drive · Space: handbrake · Shift: boost · ${controls} · C: camera · Esc: menu · \`: tuning`,
     );
     setTimeout(() => { this.hint.style.opacity = '0'; }, HINT_SECONDS * 1000);
 
@@ -91,6 +102,11 @@ export class Hud {
   }
 
   update(state: HudState): void {
+    if (!!state.damage !== this.diagramShown) {
+      this.diagramShown = !!state.damage;
+      this.diagram.element.style.display = state.damage ? '' : 'none';
+    }
+    if (state.damage) this.diagram.update(state.damage);
     const speed = Math.round(Math.abs(state.speedKmh));
     if (speed !== this.lastSpeed) {
       this.lastSpeed = speed;

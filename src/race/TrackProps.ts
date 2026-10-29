@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { RAPIER, type Physics } from '../core/Physics';
+import { RACE_CONFIG } from './Race';
+import { TRACK_WALL_CONFIG, wallLaterals } from '../world/TrackWalls';
 import type { TrackPath } from './TrackPath';
 
 const CONFIG = {
@@ -10,9 +12,13 @@ const CONFIG = {
     lift: 0.06,
     chunkSamples: 200,
     colors: { outer: '#d98f60', edge: '#e3a26c', rut: '#c9834f', centre: '#e8ab76' },
+    /** Paved tracks: dark asphalt, worn a little lighter where the wheels run, grey shoulders. */
+    asphalt: { outer: '#6d6a66', edge: '#3d3f44', rut: '#45474c', centre: '#3a3c41' },
   },
   gate: {
     postOffset: 2.5,
+    /** On a walled track the posts stand behind the walls, this far (m) clear of their outer face. */
+    postWallClear: 0.4,
     postRadius: 0.35,
     postHeight: 6.5,
     postColor: '#3a3f47',
@@ -27,6 +33,21 @@ const CONFIG = {
     stripDepth: 2.5,
     stripLift: 0.08,
     friction: 0.6,
+  },
+  /** Green paint marking the repair station around each gate (see Race.repairStation). */
+  station: {
+    color: '#36d17a',
+    emissive: '#127a3e',
+    lift: 0.1,
+    /** Edge lines this far in from the road edge, this wide. */
+    edgeInset: 0.3,
+    edgeWidth: 0.6,
+    endDepth: 0.8,
+    /** A plus sign painted this far before the gate, `plusSize` across and `plusBar` thick. */
+    plusBefore: 8,
+    plusSize: 5,
+    plusBar: 1.2,
+    step: 2,
   },
   stake: {
     spacing: 40,
@@ -62,7 +83,7 @@ export function buildRoadRibbon(path: TrackPath): { positions: Float32Array; col
   const sh = CONFIG.road.shoulder;
   const rut = CONFIG.road.rutFraction * hw;
   const offsets = [-(hw + sh), -hw, -rut, 0, rut, hw, hw + sh];
-  const c = CONFIG.road.colors;
+  const c = path.paved ? CONFIG.road.asphalt : CONFIG.road.colors;
   const palette = [c.outer, c.edge, c.rut, c.centre, c.rut, c.edge, c.outer].map((h) => new THREE.Color(h));
 
   const positions = new Float32Array(n * ROAD_VERTS * 3);
@@ -100,6 +121,60 @@ export function buildRoadRibbon(path: TrackPath): { positions: Float32Array; col
     }
   }
   return { positions, colors, indices };
+}
+
+/**
+ * Pure: how far (m) left and right of the centreline each checkpoint's gate posts stand. Normally
+ * halfWidth + postOffset; on a walled track just outside the wall on each side, out of the cars' way.
+ */
+export function gatePostOffsets(path: TrackPath): [left: number, right: number][] {
+  const g = CONFIG.gate;
+  const walls = wallLaterals(path);
+  const off = (s: number, side: number) =>
+    walls ? walls(s, side) + TRACK_WALL_CONFIG.thickness / 2 + g.postRadius + g.postWallClear : path.halfWidth + g.postOffset;
+  return path.checkpoints.map((s) => [off(s, 1), off(s, -1)]);
+}
+
+/** Pure: repair-station paint around every checkpoint gate: edge lines and end bars over the station, a plus sign before the gate. */
+export function buildStationMarkings(path: TrackPath, reach = RACE_CONFIG.repairReach): { positions: Float32Array; indices: Uint32Array } {
+  const c = CONFIG.station;
+  const hw = path.halfWidth;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const p = { x: 0, z: 0 };
+  const t = { x: 0, z: 0 };
+  const vertex = (s: number, lateral: number) => {
+    path.pointAt(s, p);
+    path.tangentAt(s, t);
+    pos.push(p.x + t.z * lateral, path.heightAt(s) + c.lift, p.z - t.x * lateral);
+  };
+  /** Flat quad from s0 to s1 along the track and l0 < l1 across it (+ = left), facing up. */
+  const quad = (s0: number, s1: number, l0: number, l1: number) => {
+    const base = pos.length / 3;
+    vertex(s0, l0);
+    vertex(s0, l1);
+    vertex(s1, l0);
+    vertex(s1, l1);
+    idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+  };
+  const inner = hw - c.edgeInset;
+  for (const [i, cp] of path.checkpoints.entries()) {
+    if (!path.hasStation(i)) continue;
+    for (let s = cp - reach; s < cp + reach - 1e-6; s += c.step) {
+      const e = Math.min(s + c.step, cp + reach);
+      quad(s, e, inner - c.edgeWidth, inner);
+      quad(s, e, -inner, -inner + c.edgeWidth);
+    }
+    quad(cp - reach, cp - reach + c.endDepth, -inner, inner);
+    quad(cp + reach - c.endDepth, cp + reach, -inner, inner);
+    const sc = cp - c.plusBefore;
+    const h = c.plusSize / 2;
+    const b = c.plusBar / 2;
+    quad(sc - b, sc + b, -h, h);
+    quad(sc - h, sc - b, -b, b);
+    quad(sc + b, sc + h, -b, b);
+  }
+  return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
 }
 
 function chequerTexture(cols: number, rows: number, cell: number): THREE.CanvasTexture {
@@ -154,7 +229,9 @@ export class TrackProps {
 
     this.buildRoad(scene);
     this.buildGates(scene);
-    this.buildStakes(scene);
+    this.buildStations(scene);
+    // Walls line a paved track; marker stakes are for the desert.
+    if (!path.paved) this.buildStakes(scene);
     this.setNextCheckpoint(0);
   }
 
@@ -251,14 +328,31 @@ export class TrackProps {
     }
   }
 
+  private buildStations(scene: THREE.Scene): void {
+    const c = CONFIG.station;
+    const { positions, indices } = buildStationMarkings(this.path);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setIndex(new THREE.BufferAttribute(indices, 1));
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshLambertMaterial({ color: c.color, emissive: c.emissive, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 }),
+    );
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+  }
+
   private buildGates(scene: THREE.Scene): void {
     const path = this.path;
     const g = CONFIG.gate;
     const hw = path.halfWidth;
-    const off = hw + g.postOffset;
+    const offsets = gatePostOffsets(path);
     const body = this.physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     const postGeo = new THREE.CylinderGeometry(g.postRadius, g.postRadius, g.postHeight, 8);
-    const bannerGeo = new THREE.BoxGeometry(2 * off + g.bannerOverhang, g.bannerHeight, g.bannerDepth);
+    // Unit-wide banner, stretched across each gate's posts.
+    const bannerGeo = new THREE.BoxGeometry(1, g.bannerHeight, g.bannerDepth);
     const chequer = chequerTexture(16, 4, 16);
     const startMat = new THREE.MeshLambertMaterial({ map: chequer, flatShading: true });
     const tmp = { x: 0, z: 0 };
@@ -270,8 +364,10 @@ export class TrackProps {
       const y = path.heightAt(s);
       const heading = Math.atan2(tan.x, tan.z);
       const nx = tan.z, nz = -tan.x;
+      const [left, right] = offsets[k]!;
 
       for (const side of [-1, 1]) {
+        const off = side > 0 ? left : right;
         const px = tmp.x + nx * off * side;
         const pz = tmp.z + nz * off * side;
         const post = new THREE.Mesh(postGeo, this.postMat);
@@ -286,7 +382,10 @@ export class TrackProps {
       }
 
       const banner = new THREE.Mesh(bannerGeo, k === 0 ? startMat : this.dimMat);
-      banner.position.set(tmp.x, y + g.bannerBottom + g.bannerHeight / 2, tmp.z);
+      // Centred between the posts (local +x is the left normal once turned to the heading).
+      const mid = (left - right) / 2;
+      banner.position.set(tmp.x + nx * mid, y + g.bannerBottom + g.bannerHeight / 2, tmp.z + nz * mid);
+      banner.scale.x = left + right + g.bannerOverhang;
       banner.rotation.y = heading;
       banner.castShadow = true;
       scene.add(banner);

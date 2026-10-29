@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 
 /**
- * Exhaust jet shown while a car boosts: an orange flame with a blue-white core, attached to
- * the car's model so it follows it exactly. Additive and unlit, so it glows against the sand.
+ * Exhaust jets shown while a car boosts: an orange flame with a blue-white core from each of the
+ * twin pipes, attached to the car's model so they follow it exactly. Additive and unlit, so they glow against the sand.
  */
 const CONFIG = {
-  /** Car-local exhaust position (+Z forward, +X left): low on the right, just behind the tail. */
-  exhaust: new THREE.Vector3(-0.42, -0.08, -2.12),
+  /** Car-local exhaust positions (+Z forward, +X left): twin pipes low on both sides, just behind the tail. */
+  exhausts: [new THREE.Vector3(-0.42, -0.08, -2.12), new THREE.Vector3(0.42, -0.08, -2.12)],
   outer: { radius: 0.24, length: 1.6, color: '#ff7a1a', opacity: 0.85 },
   inner: { radius: 0.11, length: 0.95, color: '#cfe8ff', opacity: 0.95 },
   /** Seconds to fade in/out. */
@@ -30,34 +30,43 @@ const material = (color: string, opacity: number) =>
   new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
 
 export class BoostFlame {
-  private readonly group = new THREE.Group();
+  private readonly jets: THREE.Group[] = [];
   private readonly outerMat = material(CONFIG.outer.color, CONFIG.outer.opacity);
   private readonly innerMat = material(CONFIG.inner.color, CONFIG.inner.opacity);
   private level = 0;
 
   constructor(parent: THREE.Object3D) {
-    this.group.position.copy(CONFIG.exhaust);
-    const outer = new THREE.Mesh(OUTER_GEO, this.outerMat);
-    const inner = new THREE.Mesh(INNER_GEO, this.innerMat);
-    outer.renderOrder = inner.renderOrder = 5;
-    this.group.add(outer, inner);
-    this.group.visible = false;
-    parent.add(this.group);
+    for (const at of CONFIG.exhausts) {
+      const jet = new THREE.Group();
+      jet.position.copy(at);
+      const outer = new THREE.Mesh(OUTER_GEO, this.outerMat);
+      const inner = new THREE.Mesh(INNER_GEO, this.innerMat);
+      outer.renderOrder = inner.renderOrder = 5;
+      jet.add(outer, inner);
+      jet.visible = false;
+      parent.add(jet);
+      this.jets.push(jet);
+    }
   }
 
   update(dt: number, active: boolean): void {
     this.level = Math.min(1, Math.max(0, this.level + (active ? dt : -dt) / CONFIG.fade));
-    this.group.visible = this.level > 0;
-    if (!this.group.visible) return;
-    const flicker = CONFIG.flickerMin + Math.random() * (CONFIG.flickerMax - CONFIG.flickerMin);
-    const width = 0.85 + Math.random() * 0.3;
-    this.group.scale.set(width * this.level, width * this.level, flicker * this.level);
+    const visible = this.level > 0;
+    for (const jet of this.jets) {
+      jet.visible = visible;
+      if (!visible) continue;
+      // Each pipe flickers on its own.
+      const flicker = CONFIG.flickerMin + Math.random() * (CONFIG.flickerMax - CONFIG.flickerMin);
+      const width = 0.85 + Math.random() * 0.3;
+      jet.scale.set(width * this.level, width * this.level, flicker * this.level);
+    }
+    if (!visible) return;
     this.outerMat.opacity = CONFIG.outer.opacity * this.level;
     this.innerMat.opacity = CONFIG.inner.opacity * this.level;
   }
 
   dispose(): void {
-    this.group.removeFromParent();
+    for (const jet of this.jets) jet.removeFromParent();
     this.outerMat.dispose();
     this.innerMat.dispose();
   }

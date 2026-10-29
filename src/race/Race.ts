@@ -14,6 +14,10 @@ export const RACE_CONFIG = {
   /** Wrong way: moving against the track faster than this (m/s) for longer than wrongWayDelay (s). */
   wrongWaySpeed: 4,
   wrongWayDelay: 1,
+  /** Repair station: the road within this many metres either side of each checkpoint gate... */
+  repairReach: 15,
+  /** ...and no further than this beyond halfWidth from the centreline (the gate posts stand at +2.5). */
+  repairMargin: 2,
 };
 
 export interface BestLap {
@@ -52,6 +56,8 @@ export class Race {
   /** Track position (s) and distance from the centreline, from the last update. */
   s = 0;
   distance = 0;
+  /** Signed offset from the centreline (m, + = left of the travel direction), from the last update. */
+  lateral = 0;
   private splits: number[] = [];
   private wrongTimer = 0;
   private hint = -1;
@@ -121,6 +127,7 @@ export class Race {
     this.hint = p.index;
     this.s = p.s;
     this.distance = p.distance;
+    this.lateral = p.lateral;
     const t = this.path.tangentAt(p.s, { x: 0, z: 0 });
     const along = vel.x * t.x + vel.z * t.z;
     if (along < -RACE_CONFIG.wrongWaySpeed) this.wrongTimer += dt;
@@ -145,6 +152,27 @@ export class Race {
     return (this.lap - 1) * L + done + along;
   }
 
+  /**
+   * The car is known to be at track position s (placed on the grid): track it from there. Where the
+   * track crosses itself, a search from scratch could pick the other road.
+   */
+  placeAt(s: number): void {
+    this.hint = this.path.indexAt(s);
+  }
+
+  /** The checkpoint whose repair station the car is in (any gate with a station, crossed or not), or -1. */
+  get repairStation(): number {
+    if (this.distance > this.path.halfWidth + RACE_CONFIG.repairMargin) return -1;
+    const cps = this.path.checkpoints;
+    const L = this.path.length;
+    for (let i = 0; i < cps.length; i++) {
+      if (!this.path.hasStation(i)) continue;
+      const u = this.path.wrap(this.s - cps[i]!);
+      if (Math.min(u, L - u) <= RACE_CONFIG.repairReach) return i;
+    }
+    return -1;
+  }
+
   /** How far (m) the car is along the track past the gate it still has to cross (it missed it); 0 if not past. */
   get pastNextGate(): number {
     const u = this.path.wrap(this.s - this.path.checkpoints[this.next]!);
@@ -166,7 +194,7 @@ export class Race {
     const s = this.path.checkpoints[this.lastPassed]! + RACE_CONFIG.respawnAhead;
     const q = this.path.pointAt(s, { x: 0, z: 0 });
     const t = this.path.tangentAt(s, { x: 0, z: 0 });
-    this.hint = -1;
+    this.hint = this.path.indexAt(s);
     return { x: q.x + t.z * lateral, z: q.z - t.x * lateral, yaw: this.path.headingAt(s) };
   }
 

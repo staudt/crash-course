@@ -13,6 +13,8 @@ const CONFIG = {
 
 export class Environment {
   readonly sun: THREE.DirectionalLight;
+  /** Sky/ground fill light (levels may brighten it). */
+  readonly fill: THREE.HemisphereLight;
 
   constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
     renderer.shadowMap.enabled = true;
@@ -26,7 +28,8 @@ export class Environment {
     scene.add(this.buildSky());
     scene.add(this.buildClouds());
 
-    scene.add(new THREE.HemisphereLight('#9fd6ff', '#e0803f', 1.0));
+    this.fill = new THREE.HemisphereLight('#9fd6ff', '#e0803f', 1.0);
+    scene.add(this.fill);
 
     this.sun = new THREE.DirectionalLight('#fff1d6', 2.6);
     this.sun.position.copy(CONFIG.sunOffset);

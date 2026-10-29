@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { CAMERA_CONFIG } from '../core/CameraRig';
 import { FRAMING_CONFIG } from '../game/CameraFraming';
 import type { Game } from '../game/Game';
+import { RaceDirector } from '../game/RaceDirector';
 import { DEFAULT_STATS, type CarStats } from '../vehicle/CarStats';
 
 const STORAGE_KEY = 'desert.tuning.v2';
@@ -39,6 +40,7 @@ const GROUPS: ReadonlyArray<{ name: string; wheel: boolean; specs: readonly Spec
       ['highSpeedSteer', 0.02, 0.6, 0.01],
       ['steerFadeSpeed', 2, 40, 0.5],
       ['steerRate', 1, 15, 0.1],
+      ['reverseSteer', 0.5, 2, 0.01],
     ],
   },
   {
@@ -53,6 +55,8 @@ const GROUPS: ReadonlyArray<{ name: string; wheel: boolean; specs: readonly Spec
       ['selfAlign', 0, 10, 0.1],
       ['maxYawRate', 1, 8, 0.1],
       ['sandSlip', 0, 1, 0.01],
+      ['asphaltGrip', 1, 3, 0.05],
+      ['asphaltSlip', 0.1, 1, 0.05],
     ],
   },
   {
@@ -62,6 +66,9 @@ const GROUPS: ReadonlyArray<{ name: string; wheel: boolean; specs: readonly Spec
       ['handbrakeGrip', 0.02, 1, 0.01],
       ['gripRecovery', 0.5, 20, 0.1],
       ['handbrakeYawRate', 0.5, 8, 0.05],
+      ['spinLateFrom', 0.5, 3, 0.01],
+      ['spinLateRate', 0.1, 1, 0.01],
+      ['spinMaxTurn', 1.5, 4, 0.01],
       ['handbrakeDecel', 0, 20, 0.1],
     ],
   },
@@ -91,6 +98,18 @@ const DAMAGE_SPECS: readonly Spec[] = [
   ['toughness', 0.1, 10, 0.05],
   ['dentThreshold', 0, 15, 0.1],
   ['bottomOutDamage', 0, 1, 0.05],
+  ['worldDamage', 0, 2, 0.05],
+  ['scrapeAngle', 0, 0.8, 0.01],
+  ['scrapeWear', 0, 20, 0.5],
+  ['scrapeDrag', 0, 2, 0.05],
+  ['carDamage', 0, 3, 0.05],
+  ['ramAdvantage', 0, 1, 0.05],
+  ['knockThreshold', 0, 20, 0.5],
+  ['knockFull', 1, 40, 0.5],
+  ['knockTime', 0, 3, 0.05],
+  ['knockGrip', 0, 1, 0.05],
+  ['hitSpin', 0, 4, 0.05],
+  ['hitSpinMax', 0, 10, 0.1],
   ['damageScale', 0, 30, 0.1],
   ['dentRadius', 0.2, 2.5, 0.05],
   ['dentDepthScale', 0, 0.3, 0.005],
@@ -275,9 +294,12 @@ export class Tuning {
     const g = this.game;
     const folder = this.gui.addFolder('Actions').close();
     folder.add({ f: () => g.spawnPlayer() }, 'f').name('Repair car here');
-    folder.add({ f: () => g.director.restart() }, 'f').name('Restart race (Enter)');
-    folder.add({ f: () => g.director.restart(g.director.mode === 'race' ? 'timetrial' : 'race') }, 'f').name('Race / time trial (T)');
-    folder.add({ f: () => g.respawnParked() }, 'f').name('Respawn parked cars');
+    folder.add({ f: () => g.director.restart() }, 'f').name('Restart (Enter)');
+    const race = g.director;
+    if (race instanceof RaceDirector) {
+      folder.add({ f: () => race.restart(race.mode === 'race' ? 'timetrial' : 'race') }, 'f').name('Race / time trial (T)');
+      folder.add({ f: () => race.respawnParked() }, 'f').name('Respawn parked cars');
+    }
     folder.add({ f: () => g.debris.clear() }, 'f').name('Clear debris');
     folder
       .add({ f: () => g.player.hit(new THREE.Vector3(0.5, 0.1, 2.1), new THREE.Vector3(0, 0, -1), 5) }, 'f')

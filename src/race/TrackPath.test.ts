@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TrackPath, straightLengths, type TrackDef } from './TrackPath';
-import { DUNE_LOOP } from './tracks';
+import { CROSSOVER, DUNE_LOOP } from './tracks';
 
 const square: TrackDef = {
   id: 'sq',
@@ -126,5 +126,57 @@ describe('TrackPath', () => {
       }
       expect(closest).toBeGreaterThan(55);
     });
+  });
+});
+
+describe('Crossover (figure 8)', () => {
+  const path = new TrackPath(CROSSOVER);
+  const p = { x: 0, z: 0 };
+  /** Track positions where the centreline passes through the crossing (the origin). */
+  const crossings = () => {
+    const out: number[] = [];
+    for (let i = 0; i < path.count; i++) {
+      const prev = (i + path.count - 1) % path.count;
+      const next = (i + 1) % path.count;
+      const d = Math.hypot(path.xs[i]!, path.zs[i]!);
+      if (d < 2 && d <= Math.hypot(path.xs[prev]!, path.zs[prev]!) && d <= Math.hypot(path.xs[next]!, path.zs[next]!)) out.push(i * path.step);
+    }
+    return out;
+  };
+
+  it('is a valid layout with two ~155 m straights crossing at the origin', () => {
+    expect(straightLengths(CROSSOVER).every((l) => l > 0)).toBe(true);
+    expect(Math.max(...straightLengths(CROSSOVER))).toBeCloseTo(155, -1);
+    const xs = Array.from(path.xs);
+    expect(Math.max(...xs) - Math.min(...xs) + 2 * path.halfWidth).toBeGreaterThan(220);
+    expect(Math.max(...xs) - Math.min(...xs) + 2 * path.halfWidth).toBeLessThan(250);
+    const cross = crossings();
+    expect(cross).toHaveLength(2);
+    expect(Math.abs(path.wrap(cross[1]! - cross[0]!) - path.length / 2)).toBeLessThan(2);
+  });
+
+  it('puts the start/finish and the other straight’s checkpoint midway from the crossing to the next loop, and checkpoints on the loop apexes', () => {
+    const firstBend = (s: number) => Math.min(...path.bends.map((b) => path.wrap(b.start - s)));
+    for (const cp of [path.checkpoints[0]!, path.checkpoints[2]!]) {
+      const fromCrossing = Math.min(...crossings().map((c) => path.wrap(cp - c)));
+      expect(Math.abs(fromCrossing - firstBend(cp))).toBeLessThan(2);
+      expect(path.curvatureAt(cp)).toBe(0);
+    }
+    expect(Math.abs(path.pointAt(path.checkpoints[1]!, p).x)).toBeGreaterThan(85);
+    expect(Math.abs(path.pointAt(path.checkpoints[3]!, p).x)).toBeGreaterThan(85);
+    expect([0, 1, 2, 3].map((i) => path.hasStation(i))).toEqual([true, false, true, false]);
+  });
+
+  it('a car driving over the crossing stays on its road, but a car that spun onto the other one follows that one', () => {
+    const [a, b] = crossings();
+    // Just past the crossing on the first road, 3 m off its line: still that road, though the other is close.
+    path.pointAt(a! + 4, p);
+    const t = path.tangentAt(a! + 4, { x: 0, z: 0 });
+    const on = path.project(p.x + t.z * 3, p.z - t.x * 3, path.indexAt(a! + 2));
+    expect(Math.abs(path.wrap(on.s - a!) - 4)).toBeLessThan(2);
+    // 20 m down the other road with the hint still on the first: now the other road.
+    path.pointAt(b! + 20, p);
+    const off = path.project(p.x, p.z, path.indexAt(a! + 2));
+    expect(Math.abs(path.wrap(off.s - b!) - 20)).toBeLessThan(2);
   });
 });
