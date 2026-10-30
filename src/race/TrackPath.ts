@@ -41,6 +41,12 @@ export interface TrackDef {
   surface?: 'sand' | 'asphalt';
   /** Concrete walls along both sides: gaps (m) from the road edge on straights, and on the inside / outside of bends (see TrackWalls). */
   walls?: { straight: number; inside: number; outside: number };
+  /**
+   * Street corridor (instead of `walls`): per straight (corner i → i+1), the distances (m) from the centreline
+   * to the wall faces on its [left, right]. Round a bend the walls follow both streets' lines to their corners
+   * (see TrackWalls.corridorLaterals), like the building lines of a city block.
+   */
+  corridor?: [left: number, right: number][];
   /** Laps in a race (default DIRECTOR_CONFIG.laps). */
   laps?: number;
   /** Parked cars beside the road (default DIRECTOR_CONFIG.parkedCount). */

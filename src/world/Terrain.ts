@@ -10,6 +10,8 @@ const HARDPAN = new THREE.Color('#d98f60');
 const MUD_LIT = new THREE.Color('#98683f');
 const MUD_SHADOW = new THREE.Color('#6a4629');
 const MUD_WET = new THREE.Color('#563820');
+const CONCRETE = new THREE.Color('#8e8d89');
+const CONCRETE_FAR = '#7f7e7b';
 /** Direction toward the sun, used only to bake slope shading into vertex colours. */
 const SUN_DIR = new THREE.Vector3(45, 70, 10).normalize();
 /** Cells per side of each render tile, so tiles off-screen (and outside the shadow camera) are culled. */
@@ -19,6 +21,8 @@ export class Terrain {
   readonly data: TerrainData;
   /** Render tiles (one big mesh would be drawn in full into the shadow map every frame). */
   readonly chunks: THREE.Mesh[] = [];
+  /** The plane round the world out to the horizon. */
+  readonly far: THREE.Mesh;
   readonly body: RAPIER.RigidBody;
   readonly collider: RAPIER.Collider;
 
@@ -34,7 +38,8 @@ export class Terrain {
       this.chunks.push(mesh);
     }
     full.dispose();
-    scene.add(this.buildFarGround());
+    this.far = this.buildFarGround();
+    scene.add(this.far);
 
     // Heightfield is centred on the body origin; scale.x/z are the full extents.
     this.body = physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -182,6 +187,9 @@ export class Terrain {
           c.lerp(m, mudW);
         }
 
+        const urban = this.data.urban?.[i] ?? 0;
+        if (urban > 0) c.lerp(CONCRETE, urban);
+
         c.multiplyScalar(0.95 + noise(x * 0.05, z * 0.05) * 0.04 + noise(x * 0.4, z * 0.4) * 0.03);
         colors[i * 3] = c.r;
         colors[i * 3 + 1] = c.g;
@@ -195,8 +203,10 @@ export class Terrain {
   private buildFarGround(): THREE.Mesh {
     const geo = new THREE.PlaneGeometry(12000, 12000);
     geo.rotateX(-Math.PI / 2);
-    const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: '#c8663a' }));
-    mesh.position.y = -4;
+    const city = (this.data.urban?.[0] ?? 0) > 0;
+    const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: city ? CONCRETE_FAR : '#c8663a' }));
+    // The city floor is flat to its edge: the plane meets it there instead of sitting below a rim.
+    mesh.position.y = city ? -0.05 : -4;
     mesh.receiveShadow = true;
     return mesh;
   }

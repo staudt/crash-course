@@ -13,6 +13,8 @@ export interface TerrainData {
   mud?: Float32Array;
   /** Optional, same layout: 0..1 asphalt (set by carveCircuit; grippier for cars, see CarStats.asphaltGrip). */
   paved?: Float32Array;
+  /** Optional, same layout: 0..1 city ground (grey concrete, see flatTerrain). */
+  urban?: Float32Array;
 }
 
 /** Radius (m) of the gentle, firm central arena (small dunes only). */
@@ -136,6 +138,11 @@ export function generateTerrain(opts: { seed?: number; n?: number; size?: number
     }
   }
   return { n, size, heights, softness };
+}
+
+/** A flat paved city floor at height 0: no dunes, firm, asphalt grip everywhere (sidewalks too). */
+export function flatTerrain(n: number, size: number): TerrainData {
+  return { n, size, heights: new Float32Array(n * n), softness: new Float32Array(n * n), paved: new Float32Array(n * n).fill(1), urban: new Float32Array(n * n).fill(1) };
 }
 
 /**

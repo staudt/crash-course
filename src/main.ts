@@ -6,7 +6,8 @@ import { chooseLevel } from './ui/LevelMenu';
 
 const app = document.getElementById('app')!;
 const [, menu] = await Promise.all([initPhysics(), chooseLevel(app, LEVELS, loadLevel())]);
-const game = new Game(app, levelById(menu.id)!);
+const level = levelById(menu.id)!;
+const game = new Game(app, level, await level.city?.());
 menu.hide();
 new Tuning(game);
 if (import.meta.env.DEV) (window as unknown as { game: Game }).game = game;

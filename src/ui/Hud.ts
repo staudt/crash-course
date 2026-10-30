@@ -17,6 +17,29 @@ export interface HudState {
 }
 
 const HINT_SECONDS = 10;
+/** The FPS readout averages frames over this long (ms). */
+const FPS_WINDOW = 500;
+
+/** Frames per second, averaged over a window of wall-clock time (the game's dt is clamped, so it can't be used). */
+export class FpsMeter {
+  private start = -1;
+  private frames = 0;
+
+  /** Call once per frame with performance.now(); returns a new reading at the end of each window, else null. */
+  frame(now: number, window = FPS_WINDOW): number | null {
+    if (this.start < 0) {
+      this.start = now;
+      return null;
+    }
+    this.frames++;
+    const elapsed = now - this.start;
+    if (elapsed < window) return null;
+    const fps = (this.frames * 1000) / elapsed;
+    this.start = now;
+    this.frames = 0;
+    return fps;
+  }
+}
 const FONT = '"Arial Black", "Helvetica Neue", Impact, system-ui, sans-serif';
 const SHADOW = '0 2px 0 rgba(0,0,0,0.55), 0 0 8px rgba(0,0,0,0.5)';
 
@@ -58,9 +81,14 @@ export class Hud {
   private readonly gaugeFill: HTMLDivElement;
   private lastBoost = -1;
   private lastLook = '';
+  private readonly fpsText: HTMLDivElement;
+  private readonly fpsMeter = new FpsMeter();
 
-  /** `controls`: the level's own keys for the hint, e.g. 'R: back to checkpoint · Enter: restart'. */
-  constructor(container: HTMLElement, controls: string) {
+  /**
+   * `controls`: the level's own keys for the hint, e.g. 'R: back to checkpoint · Enter: restart'.
+   * `credit`: a small permanent line in the bottom-right corner (map data attribution).
+   */
+  constructor(container: HTMLElement, controls: string, credit?: string) {
     const root = el(
       container,
       `position:absolute;inset:0;pointer-events:none;overflow:hidden;color:#fff;font-family:${FONT};text-shadow:${SHADOW};user-select:none;`,
@@ -83,6 +111,10 @@ export class Hud {
       `WASD / arrows: drive · Space: handbrake · Shift: boost · ${controls} · C: camera · Esc: menu · \`: tuning`,
     );
     setTimeout(() => { this.hint.style.opacity = '0'; }, HINT_SECONDS * 1000);
+    // Bottom-right corner, one small line: the frame rate, then the map credit (if any).
+    const foot = el(root, 'position:absolute;right:8px;bottom:2px;display:flex;gap:10px;font-family:system-ui,sans-serif;font-size:10px;font-weight:400;opacity:0.75;');
+    this.fpsText = el(foot, 'font-variant-numeric:tabular-nums;', '-- FPS');
+    if (credit) el(foot, '', credit);
 
     this.gauge = el(
       root,
@@ -99,6 +131,12 @@ export class Hud {
       'position:absolute;left:0;right:0;top:35%;text-align:center;font-size:clamp(36px,12vw,96px);font-weight:900;letter-spacing:0.05em;opacity:0;transition:opacity 0.25s;',
     );
     this.update({ speedKmh: 0, health: 1, partsLost: 0 });
+  }
+
+  /** Once per rendered frame, with performance.now(). */
+  tickFps(now: number): void {
+    const fps = this.fpsMeter.frame(now);
+    if (fps !== null) this.fpsText.textContent = `${Math.round(fps)} FPS`;
   }
 
   update(state: HudState): void {

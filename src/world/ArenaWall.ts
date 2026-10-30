@@ -49,7 +49,6 @@ export class ConcreteWall {
   constructor(scene: THREE.Scene, physics: Physics, blocks: readonly WallBlock[], cfg: { height: number; thickness: number; smooth?: boolean }, heightAt: (x: number, z: number) => number) {
     this.smooth = cfg.smooth ?? false;
     const T = cfg.thickness;
-    const N = blocks.length;
     this.segments = blocks.map((b) => {
       const ax = Math.cos(b.yaw);
       const az = -Math.sin(b.yaw);
@@ -65,10 +64,14 @@ export class ConcreteWall {
       if (pos.getY(v) > 0.99) pos.setZ(v, pos.getZ(v) * 0.7);
     }
     block.computeVertexNormals();
-    const stripeCounts = blocks.map((b) => Math.max(1, Math.round(b.length / STRIPE_LENGTH)));
-    const concrete = new THREE.InstancedMesh(block, new THREE.MeshStandardMaterial({ color: '#ffffff', flatShading: true, roughness: 0.95 }), Math.max(1, N));
+    const stripeCounts = blocks.map((b) => (b.hidden ? 0 : Math.max(1, Math.round(b.length / STRIPE_LENGTH))));
+    const shown = blocks.filter((b) => !b.hidden).length;
+    const concrete = new THREE.InstancedMesh(block, new THREE.MeshStandardMaterial({ color: '#ffffff', flatShading: true, roughness: 0.95 }), Math.max(1, shown));
+    concrete.count = shown;
     const stripeGeo = new THREE.BoxGeometry(1, 1, 1);
-    const stripes = new THREE.InstancedMesh(stripeGeo, new THREE.MeshStandardMaterial({ color: '#ffffff', flatShading: true, roughness: 0.8 }), Math.max(1, stripeCounts.reduce((a, b) => a + b, 0)));
+    const stripeTotal = stripeCounts.reduce((a, b) => a + b, 0);
+    const stripes = new THREE.InstancedMesh(stripeGeo, new THREE.MeshStandardMaterial({ color: '#ffffff', flatShading: true, roughness: 0.8 }), Math.max(1, stripeTotal));
+    stripes.count = stripeTotal;
     for (const m of [concrete, stripes]) {
       m.castShadow = true;
       m.receiveShadow = true;
@@ -82,6 +85,7 @@ export class ConcreteWall {
     const p = new THREE.Vector3();
     const s = new THREE.Vector3();
     let stripe = 0;
+    let instance = 0;
     const bottoms: number[] = [];
     const tops: number[] = [];
 
@@ -103,21 +107,22 @@ export class ConcreteWall {
         }
       }
       const bottom = lo - SINK;
-      const top = hi + cfg.height;
+      const top = hi + (b.height ?? cfg.height);
       const h = top - bottom;
       const len = length + OVERLAP * 2;
 
       q.setFromAxisAngle(yAxis, b.yaw);
       bottoms.push(bottom);
       tops.push(top);
+      if (b.hidden) return;
 
       p.set(cx, bottom, cz);
       s.set(len, h, T);
       m.compose(p, q, s);
-      concrete.setMatrixAt(i, m);
+      concrete.setMatrixAt(instance, m);
       const v = 0.92 + ((i * 7919) % 13) / 13 * 0.16;
       tint.copy(base).multiplyScalar(v);
-      concrete.setColorAt(i, tint);
+      concrete.setColorAt(instance++, tint);
 
       // Hazard stripes just below the top lip, on the striped face (+z local).
       const count = stripeCounts[i]!;

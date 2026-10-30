@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { Autopilot, type SteeringModel } from '../ai/Autopilot';
 import { RIVALS, RivalDriver, wasHit, type OtherCar, type RivalSelf } from '../ai/Rival';
 import { CAMERA_CONFIG } from '../core/CameraRig';
+import { classifyWallBlocks, FootprintIndex } from '../city/City';
+import { Balustrade } from '../city/River';
 import type { Input } from '../core/Input';
 import { CheckpointBeacon } from '../race/CheckpointBeacon';
 import { GuideArrow } from '../race/GuideArrow';
@@ -116,7 +118,12 @@ export class RaceDirector implements Director {
     this.track = track;
     this.trackProps = new TrackProps(game.scene, game.physics, track);
     new TrackMarkings(game.scene, track);
-    if (track.def.walls) new ConcreteWall(game.scene, game.physics, trackWallBlocks(track), TRACK_WALL_CONFIG, (x, z) => game.terrain.heightAt(x, z));
+    if (track.def.walls || track.def.corridor) {
+      // In a city the wall is a building's face wherever one stands right behind it (a collider only), and a barrier elsewhere.
+      const blocks = game.city ? classifyWallBlocks(trackWallBlocks(track), new FootprintIndex(game.city.buildings), TRACK_WALL_CONFIG.thickness, game.city.cut) : trackWallBlocks(track);
+      if (game.city) new Balustrade(game.scene, blocks.filter((b) => b.rail));
+      new ConcreteWall(game.scene, game.physics, blocks, TRACK_WALL_CONFIG, (x, z) => game.terrain.heightAt(x, z));
+    }
     this.raceHud = new RaceHud(container);
     const d = CAMERA_CONFIG.direction;
     const view = Math.hypot(d.x, d.z);

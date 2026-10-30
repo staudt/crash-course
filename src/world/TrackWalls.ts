@@ -6,6 +6,12 @@ export interface WallBlock {
   z: number;
   length: number;
   yaw: number;
+  /** Collider only, no mesh (a city wall standing in for a building's face). */
+  hidden?: boolean;
+  /** A riverside wall: hidden here, the city draws it as a stone balustrade. */
+  rail?: boolean;
+  /** Height (m) above the ground, instead of the wall's. */
+  height?: number;
 }
 
 export const TRACK_WALL_CONFIG = {
@@ -74,10 +80,27 @@ export function trackWallBlocks(path: TrackPath, cfg = TRACK_WALL_CONFIG): WallB
     }
 
     for (const [a, b] of runs) {
-      const n = Math.max(1, Math.ceil((b - a) / cfg.blockLength));
+      // Blocks of equal length along the wall itself (round the outside of a corner it runs much further than the track).
+      const steps = Math.max(1, Math.ceil((b - a) / cfg.scan));
+      const along = [0];
+      let prev = point(a);
+      for (let i = 1; i <= steps; i++) {
+        const q = point(a + ((b - a) * i) / steps);
+        along.push(along[i - 1]! + Math.hypot(q.x - prev.x, q.z - prev.z));
+        prev = q;
+      }
+      const total = along[steps]!;
+      /** Track distance where the wall has run `d` m from the start of this run. */
+      const sAt = (d: number): number => {
+        let i = 1;
+        while (i < steps && along[i]! < d) i++;
+        const f = (d - along[i - 1]!) / (along[i]! - along[i - 1]! || 1);
+        return a + ((b - a) * (i - 1 + Math.min(1, Math.max(0, f)))) / steps;
+      };
+      const n = Math.max(1, Math.ceil(total / cfg.blockLength));
       for (let j = 0; j < n; j++) {
-        const p0 = point(a + ((b - a) * j) / n);
-        const p1 = point(a + ((b - a) * (j + 1)) / n);
+        const p0 = point(sAt((total * j) / n));
+        const p1 = point(sAt((total * (j + 1)) / n));
         const dx = p1.x - p0.x;
         const dz = p1.z - p0.z;
         const len = Math.hypot(dx, dz) || 1;
@@ -96,6 +119,7 @@ export function trackWallBlocks(path: TrackPath, cfg = TRACK_WALL_CONFIG): WallB
  * unwalled track: `straight` m off the road edge, opening to `inside`/`outside` round bends.
  */
 export function wallLaterals(path: TrackPath, cfg = TRACK_WALL_CONFIG): ((s: number, side: number) => number) | null {
+  if (path.def.corridor) return corridorLaterals(path, path.def.corridor, cfg.thickness);
   const gaps = path.def.walls;
   if (!gaps) return null;
   const bend = averagedCurvature(path, cfg.bendWindow);
@@ -105,6 +129,67 @@ export function wallLaterals(path: TrackPath, cfg = TRACK_WALL_CONFIG): ((s: num
     // Turning left (k > 0), the left side (+1) is the inside.
     const curveGap = k * side > 0 ? gaps.inside : gaps.outside;
     return path.halfWidth + gaps.straight + (curveGap - gaps.straight) * full + cfg.thickness / 2;
+  };
+}
+
+/**
+ * Wall-centre laterals of a corridor track (`def.corridor`), with the wall's face on the corridor line. On a
+ * straight each side follows its own line. Round a bend it follows the lines of both streets (the one in and
+ * the one out) to where they meet: on the inside it turns the square corner of the block (the normal ray
+ * enters the block where it is behind both lines); on the outside it runs on to the far block's corner,
+ * closing off the street that carries on across the junction (the ray stops at whichever line comes first).
+ */
+export function corridorLaterals(path: TrackPath, corridor: readonly [number, number][], thickness: number): (s: number, side: number) => number {
+  const corners = path.def.corners;
+  const n = corners.length;
+  if (corridor.length !== n) throw new Error(`${path.def.id}: corridor needs one [left, right] per straight (${n})`);
+  // Per straight, per side (0 = left, 1 = right): a point on the wall's centre line and its normal pointing from the road into the wall.
+  const lines = corners.map((a, i) => {
+    const b = corners[(i + 1) % n]!;
+    const l = Math.hypot(b.x - a.x, b.z - a.z);
+    const dx = (b.x - a.x) / l;
+    const dz = (b.z - a.z) / l;
+    return [1, -1].map((side, k) => {
+      const nx = dz * side;
+      const nz = -dx * side;
+      const d = corridor[i]![k]! + thickness / 2;
+      return { x: a.x + nx * d, z: a.z + nz * d, nx, nz };
+    });
+  });
+  const bends = path.bends;
+  const p = { x: 0, z: 0 };
+  const t = { x: 0, z: 0 };
+
+  return (s, side) => {
+    path.pointAt(s, p);
+    path.tangentAt(s, t);
+    const ux = t.z * side;
+    const uz = -t.x * side;
+    const k = side > 0 ? 0 : 1;
+    /** Distance along the normal ray to where it passes behind straight i's line: 0 if already behind, Infinity if never. */
+    const enter = (i: number): number => {
+      const g = lines[i]![k]!;
+      const ahead = (p.x - g.x) * g.nx + (p.z - g.z) * g.nz;
+      if (ahead >= 0) return 0;
+      const rate = ux * g.nx + uz * g.nz;
+      return rate > 1e-9 ? -ahead / rate : Infinity;
+    };
+    const u = path.wrap(s);
+    const bend = bends.find((b) => path.wrap(u - b.start) <= b.end - b.start);
+    if (bend) {
+      const out = bend.corner;
+      const into = (out + n - 1) % n;
+      const a = enter(into);
+      const b = enter(out);
+      // Inside: into the block behind both lines. Outside: the first line reached (ignoring one we're already behind).
+      const d = bend.turn * side > 0 ? Math.max(a, b) : Math.min(a || Infinity, b || Infinity);
+      if (Number.isFinite(d) && d > 0) return d;
+    }
+    // On a straight: the last bend that started before s (none yet: the first straight, corner 0 → 1).
+    let straight = 0;
+    for (const b of bends) if (b.start <= u) straight = b.corner;
+    const d = enter(straight);
+    return Number.isFinite(d) && d > 0 ? d : corridor[straight]![k]! + thickness / 2;
   };
 }
 

@@ -15,6 +15,7 @@ export class Environment {
   readonly sun: THREE.DirectionalLight;
   /** Sky/ground fill light (levels may brighten it). */
   readonly fill: THREE.HemisphereLight;
+  private readonly fog: THREE.Fog;
 
   constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
     renderer.shadowMap.enabled = true;
@@ -24,7 +25,8 @@ export class Environment {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     scene.background = new THREE.Color(CONFIG.horizon);
-    scene.fog = new THREE.Fog(CONFIG.horizon, CONFIG.fogNear, CONFIG.fogFar);
+    this.fog = new THREE.Fog(CONFIG.horizon, CONFIG.fogNear, CONFIG.fogFar);
+    scene.fog = this.fog;
     scene.add(this.buildSky());
     scene.add(this.buildClouds());
 
@@ -46,6 +48,13 @@ export class Environment {
     this.sun.shadow.bias = -0.0005;
     this.sun.shadow.normalBias = 0.05;
     scene.add(this.sun, this.sun.target);
+  }
+
+  /** City levels: a longer view down the streets, and grey ground bounce instead of sand. */
+  setCity(fogNear: number, fogFar: number, ground: string): void {
+    this.fog.near = fogNear;
+    this.fog.far = fogFar;
+    this.fill.groundColor.set(ground);
   }
 
   /** Keep the sun and its shadow frustum centred on the focus (snapped to shadow texels to avoid shimmer). */

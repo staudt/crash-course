@@ -1,4 +1,6 @@
-import type { Corner, TrackDef } from './TrackPath';
+import chicagoTrack from '../city/chicago-track.json';
+import type { ChicagoTrack } from '../city/osm';
+import { TrackPath, type Corner, type TrackDef } from './TrackPath';
 
 /**
  * "Dune Loop": the first circuit. Mixed character: a long start straight, fast sweepers,
@@ -101,3 +103,46 @@ export const CROSSOVER: TrackDef = {
   parked: 0,
   guide: 'checkpoints',
 };
+
+/**
+ * A street circuit from OpenStreetMap (scripts/osm-chicago.ts → src/city/chicago-track.json): the start line
+ * `startBefore` m up the street from the first junction, and gates at fixed places along the streets.
+ */
+export function streetCircuit(t: ChicagoTrack, base: Omit<TrackDef, 'corners' | 'corridor' | 'halfWidth' | 'checkpoints' | 'start' | 'checkpointAt'>, gates: [street: number, at: number][]): TrackDef {
+  const core = { ...base, corners: t.corners, corridor: t.corridor, halfWidth: t.halfWidth, checkpoints: 1 };
+  // With start 0 the whole first straight comes first: its length, and how far the arc reaches back from the junction.
+  const probe = new TrackPath({ ...core, start: 0 });
+  const first = probe.bends.find((b) => b.corner === 1)!;
+  const reach = first.radius * Math.tan(Math.abs(first.turn) / 2);
+  const start = Math.min(0.95, Math.max(0.05, 1 - (t.startBefore - reach) / first.start));
+  const path = new TrackPath({ ...core, start });
+  /** Distance along the lap `at` (0..1) of the way down straight i (between its two arcs; straight 0 is split by the line). */
+  const along = (i: number, at: number): number => {
+    const n = t.corners.length;
+    const from = path.bends.find((b) => b.corner === i)!;
+    const to = path.bends.find((b) => b.corner === (i + 1) % n)!;
+    const a = from.end;
+    const len = path.wrap(to.start - a);
+    return path.wrap(a + len * at);
+  };
+  const checkpointAt = [0, ...gates.map(([i, at]) => along(i, at) / path.length)];
+  return { ...core, start, checkpoints: checkpointAt.length, checkpointAt };
+}
+
+/**
+ * "Chicago Loop": downtown Chicago, clockwise round real streets (OpenStreetMap data): south down LaSalle toward
+ * the Board of Trade, west on Jackson past Willis Tower, north up Wacker along the river's south branch, round
+ * the 333 W Wacker bend, east on Wacker along the main branch and the Riverwalk. The building line is the wall:
+ * sidewalks are drivable, side streets are barricaded, the river side is a balustrade over the drop.
+ */
+export const CHICAGO: TrackDef = streetCircuit(
+  chicagoTrack as ChicagoTrack,
+  { id: 'chicago', name: 'Chicago Loop', surface: 'asphalt', stations: [0, 3], laps: 3, parked: 0, guide: 'bends' },
+  [
+    [1, 0.5], // Jackson
+    [2, 0.33], // Wacker, south branch
+    [2, 0.67],
+    [4, 0.5], // Wacker, main branch
+    [0, 0.4], // north LaSalle
+  ],
+);

@@ -3,6 +3,11 @@ import { CAMERA_MODES, CameraRig, type CameraMode } from '../core/CameraRig';
 import { Input } from '../core/Input';
 import { Physics } from '../core/Physics';
 import { BoostFlame } from '../fx/BoostFlame';
+import { Buildings } from '../city/Buildings';
+import { decodeCity, fitToCorridor, type CityData } from '../city/City';
+import { CityGround } from '../city/CityGround';
+import { River } from '../city/River';
+import type { ChicagoCity } from '../city/osm';
 import { Debris } from '../fx/Debris';
 import { Particles } from '../fx/Particles';
 import { TrackPath } from '../race/TrackPath';
@@ -17,7 +22,8 @@ import { Environment } from '../world/Environment';
 import { buildElevation, carveRoad } from '../world/Road';
 import { Rocks } from '../world/Rocks';
 import { Terrain } from '../world/Terrain';
-import { generateTerrain } from '../world/TerrainData';
+import { TRACK_WALL_CONFIG, wallLaterals } from '../world/TrackWalls';
+import { flatTerrain, generateTerrain } from '../world/TerrainData';
 import { DerbyDirector } from './DerbyDirector';
 import type { Director } from './Director';
 import type { LevelDef } from './levels';
@@ -35,6 +41,13 @@ export const GAME_CONFIG = {
   playerColor: '#b9bec6',
   /** The bowl's dark mud floor gets more fill light than the desert. */
   bowlFill: 1.45,
+  /** City world: flat, so coarse cells do (2048 m at 8 m). */
+  cityN: 257,
+  citySize: 2048,
+  /** City fog (m): far enough to see down a street's length, and the ground bounce light is grey, not sand. */
+  cityFogNear: 250,
+  cityFogFar: 1200,
+  cityGroundLight: '#8a8782',
   /** Scraping a wall throws a pair of sparks every step at this speed (m/s) and up, proportionally fewer below. */
   scrapeSparkSpeed: 15,
   /** Black smoke puffs (pairs) per second from a wrecked car. */
@@ -76,6 +89,8 @@ export class Game {
   readonly debris: Debris;
   readonly hud: Hud;
   readonly level: LevelDef;
+  /** The city around a street circuit (city levels only). */
+  readonly city: CityData | null;
   readonly director: Director;
   /** Base stats for the player car. Edits apply to the next spawned car (and live via Tuning). */
   readonly playerStats: CarStats = cloneStats();
@@ -97,8 +112,9 @@ export class Game {
   private lastTime = performance.now();
   private readonly frameListeners: ((dt: number) => void)[] = [];
 
-  constructor(container: HTMLElement, level: LevelDef) {
+  constructor(container: HTMLElement, level: LevelDef, city?: ChicagoCity) {
     this.level = level;
+    this.city = city ? decodeCity(city) : null;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -110,10 +126,17 @@ export class Game {
     // The level shapes the ground before the terrain is built from it.
     const race = level.kind === 'race';
     const track = level.track ? new TrackPath(level.track) : null;
-    // A walled circuit is small: it sits in the derby-sized world, flattened like the bowl.
+    if (this.city && track) {
+      const lateral = wallLaterals(track)!;
+      fitToCorridor(this.city, track, (s, side) => lateral(s, side) - TRACK_WALL_CONFIG.thickness / 2);
+    }
+    // A walled circuit is small: it sits in the derby-sized world, flattened like the bowl. A city is flat paving.
     const big = track !== null && !track.def.walls;
-    const data = generateTerrain({ seed: GAME_CONFIG.seed, n: big ? GAME_CONFIG.terrainN : GAME_CONFIG.bowlN, size: big ? GAME_CONFIG.terrainSize : GAME_CONFIG.bowlSize });
-    if (track?.def.walls) carveCircuit(data, track);
+    const data = this.city
+      ? flatTerrain(GAME_CONFIG.cityN, GAME_CONFIG.citySize)
+      : generateTerrain({ seed: GAME_CONFIG.seed, n: big ? GAME_CONFIG.terrainN : GAME_CONFIG.bowlN, size: big ? GAME_CONFIG.terrainSize : GAME_CONFIG.bowlSize });
+    if (this.city) this.env.setCity(GAME_CONFIG.cityFogNear, GAME_CONFIG.cityFogFar, GAME_CONFIG.cityGroundLight);
+    else if (track?.def.walls) carveCircuit(data, track);
     else if (track) {
       buildElevation(track, data);
       carveRoad(data, track);
@@ -123,7 +146,14 @@ export class Game {
     }
     this.terrain = new Terrain(this.scene, this.physics, data);
     this.rig.setGround((x, z) => this.terrain.heightAt(x, z));
-    if (track?.def.walls) new Rocks(this.scene, this.physics, this.terrain, GAME_CONFIG.seed, (x, z) => track.project(x, z).distance - CIRCUIT_CONFIG.flat, 6, GAME_CONFIG.bowlSize * 0.4);
+    if (this.city && track) {
+      // The city draws its own ground, with the river cut into it (physics stays flat).
+      for (const chunk of this.terrain.chunks) chunk.visible = false;
+      this.terrain.far.visible = false;
+      new River(this.scene, this.city);
+      new Buildings(this.scene, this.city.buildings);
+      new CityGround(this.scene, track, this.city);
+    } else if (track?.def.walls) new Rocks(this.scene, this.physics, this.terrain, GAME_CONFIG.seed, (x, z) => track.project(x, z).distance - CIRCUIT_CONFIG.flat, 6, GAME_CONFIG.bowlSize * 0.4);
     else if (track) new Rocks(this.scene, this.physics, this.terrain, GAME_CONFIG.seed, (x, z) => track.project(x, z).distance, track.halfWidth);
     // Bowl: rocks only out among the dunes, well behind the wall.
     else new Rocks(this.scene, this.physics, this.terrain, GAME_CONFIG.seed, (x, z) => Math.hypot(x, z) - BOWL_CONFIG.wallRadius, 6, GAME_CONFIG.bowlSize * 0.4);
@@ -131,7 +161,7 @@ export class Game {
     this.particles = new Particles(this.scene);
     this.particles.setGround((x, z) => this.terrain.heightAt(x, z));
     this.debris = new Debris(this.scene, this.physics);
-    this.hud = new Hud(container, race ? 'R: back to checkpoint · Enter: restart · T: race / time trial' : 'R: back on your wheels · Enter: restart');
+    this.hud = new Hud(container, race ? 'R: back to checkpoint · Enter: restart · T: race / time trial' : 'R: back on your wheels · Enter: restart', this.city ? `Map data ${this.city.attribution}` : undefined);
 
     this.carEvents = {
       onPartDetached: (_car, part, linvel, angvel) => this.debris.spawn(part.mesh, part.halfExtents, linvel, angvel),
@@ -221,6 +251,7 @@ export class Game {
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
+    this.hud.tickFps(now);
 
     this.handleActions();
     this.input.read(this.player.input);

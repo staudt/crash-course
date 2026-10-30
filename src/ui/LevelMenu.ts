@@ -36,6 +36,21 @@ function pictogram(icon: LevelDef['icon']): string {
     // Lobes r 16 at (34,45) and (86,45); the straights are tangent to both and cross at (60,45).
     return `<svg class="lm-svg" viewBox="0 0 120 90" xmlns="${NS}"><path d="M43.9 32.4 L76.1 57.6 A16 16 0 1 0 76.1 32.4 L43.9 57.6 A16 16 0 1 1 43.9 32.4 Z" ${stroke}/><circle cx="68.2" cy="51.3" r="4" fill="#ffd23f"/></svg>`;
   }
+  if (icon === 'city') {
+    // A skyline over a long, thin street loop.
+    const towers = [
+      [14, 40, 12, 30],
+      [28, 22, 14, 48],
+      [44, 34, 10, 36],
+      [56, 12, 14, 58],
+      [72, 30, 12, 40],
+      [86, 20, 12, 50],
+      [100, 38, 8, 32],
+    ]
+      .map(([x, y, w, h]) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="rgba(255,255,255,0.85)"/>`)
+      .join('');
+    return `<svg class="lm-svg" viewBox="0 0 120 90" xmlns="${NS}">${towers}<rect x="8" y="72" width="104" height="12" rx="3" ${stroke}/><circle cx="96" cy="72" r="4" fill="#ffd23f"/></svg>`;
+  }
   const cx = 60;
   const cy = 45;
   const r = 34;
