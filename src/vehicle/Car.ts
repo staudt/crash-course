@@ -102,6 +102,8 @@ export class Car {
   powerScale = 1;
   /** Level multiplier on the health a hit takes (the derby lowers it so cars take many more hits; dents and lost parts are unchanged). */
   healthLoss = 1;
+  /** Whether this step's jolt came from another car (set by hitScale). */
+  private carHit = false;
   /** Handbrake spin direction (+1 = nose swinging left), latched when the handbrake goes on. */
   private spinDir = 0;
   /** A spin carried on after the handbrake was released (see stats.spinCommit). */
@@ -630,6 +632,7 @@ export class Car {
     const strength = (impact * scale - s.dentThreshold) / s.toughness;
     if (strength <= 0) return;
     dvLocal.normalize();
+    const wear = this.carHit ? s.carHealthLoss : 1;
 
     let applied = 0;
     for (const other of this.contacts) {
@@ -644,7 +647,7 @@ export class Car {
           if (cp) p.add(_v.set(cp.x, cp.y, cp.z));
         }
         p.divideScalar(n);
-        this.hit(p, new THREE.Vector3(-ln.x, -ln.y, -ln.z), strength / this.contacts.size);
+        this.hit(p, new THREE.Vector3(-ln.x, -ln.y, -ln.z), strength / this.contacts.size, wear);
         applied++;
       });
     }
@@ -654,7 +657,7 @@ export class Car {
       const p = dvLocal.clone().multiplyScalar(-1);
       const k = 1 / Math.max(Math.abs(p.x) / d.halfWidth, Math.abs(p.y) / d.halfHeight, Math.abs(p.z) / d.halfLength, 1e-6);
       p.multiplyScalar(k);
-      this.hit(p, dvLocal, strength);
+      this.hit(p, dvLocal, strength, wear);
     }
   }
 
@@ -805,18 +808,19 @@ export class Car {
         world = false;
       }
     }
+    this.carHit = car > 0;
     if (car > 0) return car;
     return world ? s.worldDamage : 1;
   }
 
   /**
    * Applies one impact in chassis-local space. `dir` is the direction metal is pushed (into the car).
-   * Public so debug tools and tests can dent cars directly.
+   * Public so debug tools and tests can dent cars directly. `wear` scales the health it takes (stats.carHealthLoss for car hits).
    */
-  hit(pointLocal: THREE.Vector3, dir: THREE.Vector3, strength: number): void {
+  hit(pointLocal: THREE.Vector3, dir: THREE.Vector3, strength: number, wear = 1): void {
     const s = this.stats;
     this.dent(pointLocal, dir, strength, true);
-    this.health = Math.max(0, this.health - strength * s.damageScale * this.healthLoss);
+    this.health = Math.max(0, this.health - strength * s.damageScale * this.healthLoss * wear);
 
     if (this.events.onImpact) {
       const wp = pointLocal.clone().applyQuaternion(this.currRot).add(this.currPos);

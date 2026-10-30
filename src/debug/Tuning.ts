@@ -56,7 +56,7 @@ const GROUPS: ReadonlyArray<{ name: string; wheel: boolean; specs: readonly Spec
       ['maxYawRate', 1, 8, 0.1],
       ['sandSlip', 0, 1, 0.01],
       ['asphaltGrip', 1, 3, 0.05],
-      ['asphaltSlip', 0.1, 1, 0.05],
+      ['asphaltSlip', 0.02, 1, 0.01],
     ],
   },
   {
@@ -103,6 +103,7 @@ const DAMAGE_SPECS: readonly Spec[] = [
   ['scrapeWear', 0, 20, 0.5],
   ['scrapeDrag', 0, 2, 0.05],
   ['carDamage', 0, 3, 0.05],
+  ['carHealthLoss', 0, 2, 0.05],
   ['ramAdvantage', 0, 1, 0.05],
   ['knockThreshold', 0, 20, 0.5],
   ['knockFull', 1, 40, 0.5],

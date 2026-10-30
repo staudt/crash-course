@@ -79,7 +79,7 @@ export interface CarStats {
   selfAlign: number; // 1/s: with the wheel centred, how fast the nose swings back to the travel direction
   sandSlip: number; // 0..1: fraction of grip lost on fully soft sand
   asphaltGrip: number; // grip multiplier on asphalt (Car.paving)
-  asphaltSlip: number; // driftMaxSlip multiplier on asphalt: slides stay much narrower
+  asphaltSlip: number; // driftMaxSlip multiplier on asphalt: ~1.6°, so steering alone never slides (only the handbrake swings the tail)
   handbrakeGrip: number; // grip multiplier while handbraking
   gripRecovery: number; // per second, how fast grip returns after releasing the handbrake
   handbrakeYawRate: number; // rad/s body rotation at full steer while handbraking
@@ -120,6 +120,7 @@ export interface CarStats {
   scrapeEvery: number; // metres slid between scratches (light dents at the contact)
   scrapeDent: number; // strength of one scratch (a cosmetic dent: no health or part HP)
   carDamage: number; // jolt multiplier for car-car hits
+  carHealthLoss: number; // share of a car-car hit's damage taken off health (dents, parts and knocks are unchanged)
   ramAdvantage: number; // 0..1: how far a car-car crash's damage shifts onto the slower car (see Crash.ramFactor)
   rimFriction: number; // chassis friction once a wheel is gone (the bare corner scrapes along instead of anchoring the car)
   // Knock: a big hit loosens the arcade grip and yaw control for a moment so the crash's own spin and shove carry
@@ -167,7 +168,7 @@ export const DEFAULT_STATS: Readonly<CarStats> = {
   selfAlign: 0,
   sandSlip: 0.3,
   asphaltGrip: 2.2,
-  asphaltSlip: 0.25,
+  asphaltSlip: 0.05,
   handbrakeGrip: 0.25,
   gripRecovery: 5,
   handbrakeYawRate: 4.5,
@@ -200,6 +201,7 @@ export const DEFAULT_STATS: Readonly<CarStats> = {
   scrapeEvery: 1.5,
   scrapeDent: 0.4,
   carDamage: 1.3,
+  carHealthLoss: 0.75,
   ramAdvantage: 0.7,
   rimFriction: 0.12,
   knockThreshold: 3,

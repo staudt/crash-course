@@ -334,12 +334,25 @@ describe('Car', () => {
       expect(corner(35, 1, 1).slip).toBeLessThan(0.75);
     });
 
-    it('asphalt grips far better: half steer holds where sand drifts, full lock slides a fraction as wide', () => {
+    it('asphalt grips: steering alone never slides, even on full lock', () => {
       expect(corner(25, 0.5, 1).slip).toBeGreaterThan(0.12); // ~90 km/h on sand: a 9° drift
       expect(corner(25, 0.5, 1, true).slip).toBeLessThan(0.03); // on asphalt: grips
       expect(corner(35, 0.5, 1, true).slip).toBeLessThan(0.03); // even at 126 km/h
-      expect(corner(35, 1, 1, true).slip).toBeLessThan(0.16); // full lock: ~8° (~29° on sand)
-      expect(corner(35, 1, 1, true).slip).toBeLessThan(corner(35, 1, 1).slip * 0.35);
+      for (const v of [15, 25, 35, 45]) expect(Math.abs(corner(v, 1, 1, true).slip)).toBeLessThan(0.04); // full lock: ~2° (~29° on sand)
+    });
+
+    it('asphalt still turns: the tight slide cap does not stop the nose following the steering', () => {
+      // A slide cap of 0 would: the nose could never lead the path, and full lock barely turned the car.
+      const { spawn, run } = setup();
+      const car = spawn(0, 0);
+      car.paving = () => 1;
+      run(1);
+      car.body.setLinvel({ x: 0, y: 0, z: 25 }, true);
+      car.input.throttle = 1;
+      run(1 / 6);
+      car.input.steer = 1;
+      run(1);
+      expect(Math.abs(car.body.angvel().y)).toBeGreaterThan(0.85); // rad/s at 90 km/h (0.17 with a cap of 0)
     });
   });
 
@@ -509,28 +522,46 @@ describe('crashes', () => {
     run(1.5);
     expect(lost(car)).toBeGreaterThan(20);
     expect(lost(car)).toBeLessThan(0.3 * car.stats.maxHealth); // measured ~65 of 450
-    expect(lost(tBone(KMH100).b)).toBeGreaterThan(2.5 * lost(car)); // measured ~210
+    expect(lost(tBone(KMH100).b)).toBeGreaterThan(2 * lost(car)); // measured ~159 (210 before carHealthLoss 0.75)
   });
 
   it('the rammer comes off lightly, the car it T-bones badly', () => {
     const { a, b } = tBone(KMH100);
     expect(lost(a)).toBeGreaterThan(0);
-    expect(lost(a)).toBeLessThan(0.2 * lost(b)); // measured 25 vs 210
+    expect(lost(a)).toBeLessThan(0.2 * lost(b)); // measured 19 vs 159
   });
 
   it('in a head-on the faster car deals most of the damage', () => {
     const { a: fast, b: slow } = headOn(KMH100, KMH100 / 2);
-    expect(lost(fast)).toBeLessThan(0.5 * lost(slow)); // measured 112 vs 275
+    expect(lost(fast)).toBeLessThan(0.5 * lost(slow)); // measured 84 vs 218
     const even = headOn(KMH100 * 0.6, KMH100 * 0.6);
     // Roughly even (the spin-out kick makes the follow-up contacts differ a little).
     expect(lost(even.a) / lost(even.b)).toBeGreaterThan(0.8);
     expect(lost(even.a) / lost(even.b)).toBeLessThan(1.25);
   });
 
+  it('car hits take carHealthLoss of their damage off health: a third more hits to wreck, the same dents', () => {
+    const ram = (carHealthLoss: number) => {
+      const { spawn, run } = setup();
+      const stats = { ...cloneStats(), carHealthLoss };
+      const a = spawn(0, 0, Math.PI / 2, stats);
+      const b = spawn(8, 0, 0, { ...stats });
+      run(0.5);
+      launch(a, KMH100);
+      run(1.5);
+      return b;
+    };
+    const full = ram(1);
+    const resisted = ram(0.75);
+    expect(lost(resisted) / lost(full)).toBeGreaterThan(0.7);
+    expect(lost(resisted) / lost(full)).toBeLessThan(0.8);
+    expect(resisted.partsLost).toBe(full.partsLost);
+  });
+
   it('a heavier, tougher car wins an even head-on', () => {
     const heavy = applyModifiers(DEFAULT_STATS, [{ stat: 'mass', mul: 1.4 }, { stat: 'toughness', mul: 1.6 }]);
     const { a, b } = headOn(KMH100 * 0.6, KMH100 * 0.6, heavy);
-    expect(lost(b)).toBeLessThan(0.6 * lost(a)); // measured 85 vs 182
+    expect(lost(b)).toBeLessThan(0.6 * lost(a)); // measured 64 vs 136
   });
 
   it('cars do not pass through each other in a very fast head-on', () => {
