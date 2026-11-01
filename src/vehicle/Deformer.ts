@@ -78,3 +78,41 @@ export function applyDent(
   }
   return total;
 }
+
+/** Colour of metal scraped back to bare steel, and of the scorched, crumpled worst of a dent. */
+export const DAMAGE_TINT = {
+  bare: [0.42, 0.43, 0.44] as const,
+  scorch: [0.035, 0.03, 0.026] as const,
+};
+
+const smooth = (x: number, a: number, b: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * Recolours each vertex by how far it is pushed from its original position: a light dent scrapes
+ * the paint to bare steel, a deep one is scorched dark. A function of displacement only, so as a
+ * repair eases the vertices back the paint comes back with them. `colors`/`base` are rgb triplets.
+ */
+export function tintDamage(
+  colors: Float32Array,
+  base: Float32Array,
+  positions: Float32Array,
+  original: Float32Array,
+  maxDent: number,
+): void {
+  const { bare, scorch } = DAMAGE_TINT;
+  for (let i = 0; i < positions.length; i += 3) {
+    const dx = positions[i]! - original[i]!;
+    const dy = positions[i + 1]! - original[i + 1]!;
+    const dz = positions[i + 2]! - original[i + 2]!;
+    const t = Math.sqrt(dx * dx + dy * dy + dz * dz) / maxDent;
+    const s = 0.75 * smooth(t, 0.08, 0.45);
+    const k = 0.8 * smooth(t, 0.55, 1);
+    for (let c = 0; c < 3; c++) {
+      const scraped = base[i + c]! + (bare[c]! - base[i + c]!) * s;
+      colors[i + c] = scraped + (scorch[c]! - scraped) * k;
+    }
+  }
+}

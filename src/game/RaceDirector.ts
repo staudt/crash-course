@@ -13,6 +13,7 @@ import type { TrackPath } from '../race/TrackPath';
 import { TrackProps } from '../race/TrackProps';
 import { ordinal, RaceHud, type RaceHudState, type ResultRow } from '../ui/RaceHud';
 import type { Car, SpawnPose } from '../vehicle/Car';
+import type { CarVariant } from '../vehicle/CarBuilder';
 import { applyModifiers, cloneStats, DEFAULT_DIMS } from '../vehicle/CarStats';
 import { ConcreteWall } from '../world/ArenaWall';
 import { TRACK_WALL_CONFIG, trackWallBlocks } from '../world/TrackWalls';
@@ -92,6 +93,8 @@ interface Racer {
 }
 
 const _f = new THREE.Vector3();
+/** Body styles of the junkers parked along the track, in turn. */
+const PARKED_STYLES: CarVariant[] = ['sedan', 'wagon', 'pickup', 'sedan', 'muscle'];
 
 export class RaceDirector implements Director {
   mode: RaceMode = 'race';
@@ -191,7 +194,7 @@ export class RaceDirector implements Director {
       this.track.pointAt(s, q);
       this.track.tangentAt(s, t);
       const pose = { position: { x: q.x + t.z * off, y: 0, z: q.z - t.x * off }, yaw: this.track.headingAt(s) + side * (0.4 + (i % 3) * 0.3) };
-      const car = g.spawnCar(c.parkedColors[i % c.parkedColors.length]!, i % 3 === 2 ? 'pickup' : 'sedan', pose);
+      const car = g.spawnCar(c.parkedColors[i % c.parkedColors.length]!, PARKED_STYLES[i % PARKED_STYLES.length]!, pose, undefined, { number: 10 + ((i * 37) % 90), kit: { rust: 0.8 } });
       car.input.brake = 1; // parked: brakes on, so they don't roll down dunes
       this.parked.push(car);
     }
@@ -218,7 +221,7 @@ export class RaceDirector implements Director {
           continue;
         }
         const profile = RIVALS[next++]!;
-        const car = g.spawnCar(profile.color, profile.variant, this.gridPose(slot), applyModifiers(cloneStats(), profile.car));
+        const car = g.spawnCar(profile.color, profile.variant, this.gridPose(slot), applyModifiers(cloneStats(), profile.car), profile.look);
         const marker = new THREE.Mesh(MARKER_GEO, MARKER_MAT);
         marker.visible = false;
         g.scene.add(marker);

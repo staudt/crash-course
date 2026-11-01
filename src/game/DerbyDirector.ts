@@ -92,7 +92,7 @@ export class DerbyDirector implements Director {
     this.fighters.push({ id: 0, name: 'You', color: GAME_CONFIG.playerColor, car: g.player, driver: null, lastHealth: 1 });
     order.forEach((profile, k) => {
       const id = k + 1;
-      const car = g.spawnCar(profile.color, profile.variant, this.gridPose(id, n), applyModifiers(cloneStats(), profile.car));
+      const car = g.spawnCar(profile.color, profile.variant, this.gridPose(id, n), applyModifiers(cloneStats(), profile.car), profile.look);
       car.healthLoss = DERBY_CONFIG.healthLoss;
       const driver = new DerbyDriver(profile, this.steering, BOWL_CONFIG.floorRadius, id % 2 ? 1 : -1);
       driver.playerId = 0;

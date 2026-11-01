@@ -11,6 +11,7 @@ export type PartKind =
   | 'bumperRear'
   | 'doorLeft'
   | 'doorRight'
+  | 'wing'
   | 'wheel';
 
 export const DETACHABLE_PARTS: readonly PartKind[] = [
@@ -19,6 +20,7 @@ export const DETACHABLE_PARTS: readonly PartKind[] = [
   'bumperRear',
   'doorLeft',
   'doorRight',
+  'wing',
   'wheel',
 ];
 
@@ -222,6 +224,7 @@ export const DEFAULT_STATS: Readonly<CarStats> = {
     bumperRear: 40,
     doorLeft: 55,
     doorRight: 55,
+    wing: 35,
     wheel: 120,
   },
   wheelDamage: 3.5,

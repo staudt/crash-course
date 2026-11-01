@@ -48,7 +48,20 @@ export const COCKPIT_CONFIG = {
   followRate: 14,
 };
 
+/** Player zoom (+/- keys, mouse wheel) for the chase and overhead views: a multiplier on the camera distance. */
+export const ZOOM_CONFIG = {
+  min: { chase: 0.5, fixed: 0.4 },
+  max: { chase: 3, fixed: 2.5 },
+  /** Zoom factor per wheel notch. */
+  wheelStep: 1.12,
+  /** Zoom rate while +/- is held (e-folds per second). */
+  keyRate: 1.2,
+  /** How fast the view eases to the new zoom (1/s). */
+  rate: 10,
+};
+
 export type CameraMode = 'chase' | 'cockpit' | 'fixed';
+export type ZoomMode = keyof typeof ZOOM_CONFIG.min;
 
 /** The order C cycles through. */
 export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'cockpit', 'fixed'];
@@ -74,6 +87,9 @@ export class CameraRig {
   /** Cockpit view: smoothed car rotation. */
   private readonly cockpitRot = new THREE.Quaternion();
   private groundAt: (x: number, z: number) => number = () => -Infinity;
+  /** Player zoom per view: the goal, and the smoothed value in use. */
+  readonly zoom: Record<ZoomMode, number> = { chase: 1, fixed: 1 };
+  private readonly zoomNow: Record<ZoomMode, number> = { chase: 1, fixed: 1 };
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(CAMERA_CONFIG.fov, aspect, 1, 1500);
@@ -112,11 +128,28 @@ export class CameraRig {
   snap(pos: THREE.Vector3, heading: number, rot: THREE.Quaternion): void {
     this.target.copy(pos);
     this.chaseYaw = heading;
-    this.chaseY = pos.y + CHASE_CONFIG.height;
+    this.chaseY = pos.y + CHASE_CONFIG.height * this.zoomNow.chase;
     this.cockpitRot.copy(rot);
     if (this.mode === 'chase') this.applyChase(pos, 0);
     else if (this.mode === 'cockpit') this.applyCockpit(pos);
     else this.applyFixed();
+  }
+
+  /** Multiplies the current view's zoom (> 1 = farther out); false in the cockpit, which has none. */
+  zoomBy(factor: number): boolean {
+    if (this.mode === 'cockpit') return false;
+    const m = this.mode;
+    this.zoom[m] = Math.min(ZOOM_CONFIG.max[m], Math.max(ZOOM_CONFIG.min[m], this.zoom[m] * factor));
+    return true;
+  }
+
+  /** Sets both views' zoom at once (e.g. restored from storage), with no easing. */
+  setZoom(z: Partial<Record<ZoomMode, number>>): void {
+    for (const m of ['chase', 'fixed'] as const) {
+      const v = z[m];
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+      this.zoom[m] = this.zoomNow[m] = Math.min(ZOOM_CONFIG.max[m], Math.max(ZOOM_CONFIG.min[m], v));
+    }
   }
 
   /** Extra zoom (m, negative = closer) and ground-plane look offset on top of the follow. */
@@ -129,6 +162,8 @@ export class CameraRig {
   /** `heading` is the car's yaw (0 faces +Z), `rot` its rotation. */
   update(dt: number, pos: THREE.Vector3, vel: THREE.Vector3, speedFraction: number, heading: number, rot: THREE.Quaternion): void {
     const sf = Math.min(1, Math.max(0, speedFraction));
+    const kz = 1 - Math.exp(-ZOOM_CONFIG.rate * dt);
+    for (const m of ['chase', 'fixed'] as const) this.zoomNow[m] += (this.zoom[m] - this.zoomNow[m]) * kz;
     if (this.mode === 'chase') {
       this.updateChase(dt, pos, vel, sf, heading);
       return;
@@ -154,7 +189,7 @@ export class CameraRig {
     this.target.z += (goal.z - this.target.z) * kh;
     this.target.y += (goal.y - this.target.y) * kv;
 
-    const goalDist = Math.max(c.minDistance, c.distance + c.speedZoom * sf + this.framing.zoom);
+    const goalDist = Math.max(c.minDistance, c.distance + c.speedZoom * sf + this.framing.zoom) * this.zoomNow.fixed;
     this.distance += (goalDist - this.distance) * (1 - Math.exp(-1.5 * dt));
     this.applyFixed();
   }
@@ -182,10 +217,11 @@ export class CameraRig {
     const c = CHASE_CONFIG;
     const fx = Math.sin(this.chaseYaw);
     const fz = Math.cos(this.chaseYaw);
-    const back = c.distance + c.speedDistance * sf;
+    const zoom = this.zoomNow.chase;
+    const back = (c.distance + c.speedDistance * sf) * zoom;
     const x = pos.x - fx * back;
     const z = pos.z - fz * back;
-    const wantY = pos.y + c.height;
+    const wantY = pos.y + c.height * zoom;
     this.chaseY = dt > 0 ? this.chaseY + (wantY - this.chaseY) * (1 - Math.exp(-c.heightRate * dt)) : wantY;
     const y = Math.max(this.chaseY, this.groundAt(x, z) + c.clearance);
     this.camera.position.set(x, y, z);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyDent, type DentParams } from './Deformer';
+import { applyDent, tintDamage, type DentParams } from './Deformer';
 
 /** A flat grid of vertices on the z=0 plane, spacing 0.1, from -1..1. */
 function grid(): Float32Array {
@@ -66,5 +66,26 @@ describe('applyDent', () => {
     expect(applyDent(pos, orig, origin, inward, params)).toBeGreaterThan(0.2);
     // Far away: nothing moves.
     expect(applyDent(pos, orig, { x: 5, y: 5, z: 0 }, inward, params)).toBe(0);
+  });
+});
+
+describe('tintDamage', () => {
+  const base = () => new Float32Array([0.8, 0.1, 0.1, 0.8, 0.1, 0.1, 0.8, 0.1, 0.1]);
+  const orig = new Float32Array([0, 0, 0, 1, 0, 0, 2, 0, 0]);
+
+  it('scrapes light dents to bare metal and scorches deep ones', () => {
+    const pos = new Float32Array([0, 0, 0, 1, 0, -0.12, 2, 0, -0.3]);
+    const colors = base();
+    tintDamage(colors, base(), pos, orig, 0.3);
+    expect(Array.from(colors.slice(0, 3))).toEqual(Array.from(base().slice(0, 3)));
+    expect(colors[4]).toBeGreaterThan(0.2); // red paint scraped toward grey steel
+    expect(colors[3]).toBeLessThan(0.8);
+    expect(colors[6]! + colors[7]! + colors[8]!).toBeLessThan(0.4); // scorched dark
+  });
+
+  it('returns to the base colour once the vertex is back', () => {
+    const colors = base().fill(0);
+    tintDamage(colors, base(), orig.slice(), orig, 0.3);
+    expect(colors).toEqual(base());
   });
 });

@@ -5,7 +5,7 @@ import type { CarModel, CarPart } from './CarModel';
 import type { DamageReport } from './DamageReport';
 import { DEFAULT_DIMS, type CarDims, type CarStats } from './CarStats';
 import { knockAmount, ramFactor } from './Crash';
-import { applyDent } from './Deformer';
+import { applyDent, tintDamage } from './Deformer';
 import { repairStep } from './Repair';
 
 export interface CarEvents {
@@ -117,6 +117,8 @@ export class Car {
   private readonly physics: Physics;
   private readonly events: CarEvents;
   private readonly originals = new Map<CarPart, Float32Array>();
+  /** Undamaged vertex colours (paint and grime), for parts that have them: dents scrape and scorch them (see tintDamage). */
+  private readonly baseColors = new Map<CarPart, Float32Array>();
   private readonly partHp = new Map<CarPart, number>();
   /** Pristine copy of each part (not in the scene) and where it hangs, for refitting it after it broke off. */
   private readonly spares = new Map<CarPart, { mesh: THREE.Mesh; parent: THREE.Object3D }>();
@@ -202,6 +204,8 @@ export class Car {
     for (const part of model.parts) {
       const pos = part.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
       this.originals.set(part, (pos.array as Float32Array).slice());
+      const col = part.mesh.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+      if (col) this.baseColors.set(part, (col.array as Float32Array).slice());
       const spare = part.mesh.clone();
       spare.geometry = part.mesh.geometry.clone();
       this.spares.set(part, { mesh: spare, parent: part.mesh.parent ?? model.root });
@@ -864,6 +868,7 @@ export class Car {
       if (moved > 0) {
         pos.needsUpdate = true;
         geom.computeBoundingSphere();
+        this.tint(part);
         this.dented.add(part);
         if (hit) this.damagePart(part, moved * 1.5 + strength * 2, detach);
       }
@@ -932,7 +937,19 @@ export class Car {
     }
     pos.needsUpdate = true;
     geom.computeBoundingSphere();
+    this.tint(part);
     return left;
+  }
+
+  /** Recolours a part's dented vertices from their displacement (scraped steel, scorched in deep dents). */
+  private tint(part: CarPart): void {
+    const base = this.baseColors.get(part);
+    if (!base) return;
+    const geom = part.mesh.geometry;
+    const col = geom.getAttribute('color') as THREE.BufferAttribute;
+    const pos = geom.getAttribute('position') as THREE.BufferAttribute;
+    tintDamage(col.array as Float32Array, base, pos.array as Float32Array, this.originals.get(part)!, this.stats.maxDent);
+    col.needsUpdate = true;
   }
 
   /** Fits a fresh copy of a lost part, wheels first. */

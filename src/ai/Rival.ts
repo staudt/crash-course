@@ -1,7 +1,7 @@
 import type { DriveInput } from '../core/types';
 import { RACE_CONFIG } from '../race/Race';
 import type { TrackPath } from '../race/TrackPath';
-import type { CarVariant } from '../vehicle/CarBuilder';
+import type { CarLook, CarVariant } from '../vehicle/CarBuilder';
 import type { StatModifier } from '../vehicle/CarStats';
 import { Autopilot, type AutopilotCar, type SteeringModel } from './Autopilot';
 
@@ -52,6 +52,8 @@ export interface RivalProfile {
   title: string;
   color: string;
   variant: CarVariant;
+  /** Number and bolt-on kit (see CarKit). */
+  look?: CarLook;
   /** 0 = cautious .. 1 = on the limit (base corner/brake confidence). */
   skill: number;
   /** Preferred lateral offset (m, positive = left) when the road ahead is clear. */
@@ -69,7 +71,8 @@ export const RIVALS: RivalProfile[] = [
     name: 'Viper',
     title: 'Speed demon',
     color: '#d8432f',
-    variant: 'sedan',
+    variant: 'muscle',
+    look: { number: 13, kit: { spikes: true } },
     skill: 0.8,
     lane: 1.5,
     car: [{ stat: 'engineForce', mul: 1.25 }, { stat: 'topSpeed', mul: 1.1 }, { stat: 'gripAccel', mul: 0.88 }, { stat: 'brakeDecel', mul: 1.15 }],
@@ -81,6 +84,7 @@ export const RIVALS: RivalProfile[] = [
     title: 'Smooth operator',
     color: '#2f9fd8',
     variant: 'sedan',
+    look: { number: 7, kit: { rust: 0.2 } },
     skill: 0.8,
     lane: 0,
     car: [{ stat: 'gripAccel', mul: 1.15 }, { stat: 'engineForce', mul: 0.92 }, { stat: 'driftMaxSlip', mul: 0.8 }],
@@ -92,6 +96,7 @@ export const RIVALS: RivalProfile[] = [
     title: 'Bully',
     color: '#3fae6a',
     variant: 'pickup',
+    look: { number: 66, kit: { plating: true } },
     skill: 0.5,
     lane: -1,
     car: [{ stat: 'mass', mul: 1.4 }, { stat: 'engineForce', mul: 1.3 }, { stat: 'toughness', mul: 1.6 }, { stat: 'maxHealth', mul: 1.3 }],
@@ -103,6 +108,7 @@ export const RIVALS: RivalProfile[] = [
     title: 'Sand runner',
     color: '#e8c547',
     variant: 'pickup',
+    look: { number: 22, kit: { lightBar: true } },
     skill: 0.6,
     lane: -2,
     car: [{ stat: 'sandDrag', mul: 0.5 }, { stat: 'sandSlip', mul: 0.4 }],
@@ -113,7 +119,8 @@ export const RIVALS: RivalProfile[] = [
     name: 'Rusty',
     title: 'Hothead',
     color: '#7a4fc9',
-    variant: 'sedan',
+    variant: 'wagon',
+    look: { number: 99, kit: { rust: 0.85 } },
     skill: 0.35,
     lane: 0.5,
     car: [{ stat: 'toughness', mul: 1.2 }],

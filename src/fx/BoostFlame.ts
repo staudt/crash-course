@@ -6,7 +6,7 @@ import * as THREE from 'three';
  */
 const CONFIG = {
   /** Car-local exhaust positions (+Z forward, +X left): twin pipes low on both sides, just behind the tail. */
-  exhausts: [new THREE.Vector3(-0.42, -0.08, -2.12), new THREE.Vector3(0.42, -0.08, -2.12)],
+  exhausts: [new THREE.Vector3(-0.45, -0.27, -2.22), new THREE.Vector3(0.45, -0.27, -2.22)],
   outer: { radius: 0.24, length: 1.6, color: '#ff7a1a', opacity: 0.85 },
   inner: { radius: 0.11, length: 0.95, color: '#cfe8ff', opacity: 0.95 },
   /** Seconds to fade in/out. */

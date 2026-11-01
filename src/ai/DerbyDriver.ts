@@ -1,5 +1,5 @@
 import type { DriveInput } from '../core/types';
-import type { CarVariant } from '../vehicle/CarBuilder';
+import type { CarLook, CarVariant } from '../vehicle/CarBuilder';
 import type { StatModifier } from '../vehicle/CarStats';
 import { pursuitSteer, type AutopilotCar, type SteeringModel } from './Autopilot';
 import { attackPoint } from './Rival';
@@ -40,6 +40,8 @@ export interface DerbyProfile {
   title: string;
   color: string;
   variant: CarVariant;
+  /** Number and bolt-on kit (see CarKit). */
+  look?: CarLook;
   car: StatModifier[];
   style: DerbyStyle;
 }
@@ -53,6 +55,7 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     title: 'Juggernaut',
     color: '#3fae6a',
     variant: 'pickup',
+    look: { number: 66, kit: { plating: true } },
     car: [{ stat: 'mass', mul: 1.4 }, { stat: 'engineForce', mul: 1.3 }, { stat: 'toughness', mul: 1.5 }, { stat: 'maxHealth', mul: 1.25 }],
     style: { ...BASE, aggression: 0.95, chargeSpeed: 21, runUp: 24 },
   },
@@ -61,7 +64,8 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     name: 'Rusty',
     title: 'Hothead',
     color: '#7a4fc9',
-    variant: 'sedan',
+    variant: 'wagon',
+    look: { number: 99, kit: { rust: 0.85 } },
     car: [{ stat: 'toughness', mul: 1.15 }],
     style: { ...BASE, aggression: 0.6, temper: 0.35, calm: 0.015, dirty: 0.25, chargeSpeed: 24 },
   },
@@ -70,7 +74,8 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     name: 'Viper',
     title: 'Spinner',
     color: '#d8432f',
-    variant: 'sedan',
+    variant: 'muscle',
+    look: { number: 13, kit: { spikes: true } },
     car: [{ stat: 'engineForce', mul: 1.2 }, { stat: 'gripAccel', mul: 1.05 }],
     style: { ...BASE, attack: 'spin', aggression: 0.7, chargeSpeed: 25 },
   },
@@ -79,7 +84,8 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     name: 'Tailgunner',
     title: 'Rear-ender',
     color: '#e07b2f',
-    variant: 'pickup',
+    variant: 'wagon',
+    look: { number: 31, kit: { rearRam: true } },
     car: [{ stat: 'reverseForce', mul: 1.5 }, { stat: 'toughness', mul: 1.15 }],
     style: { ...BASE, attack: 'rear', aggression: 0.75, runUp: 22 },
   },
@@ -89,6 +95,7 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     title: 'Backs in',
     color: '#c94f8a',
     variant: 'sedan',
+    look: { number: 58, kit: { rearRam: true, rust: 0.55 } },
     car: [{ stat: 'reverseForce', mul: 1.4 }],
     style: { ...BASE, attack: 'rear', prey: 'weak', aggression: 0.6, caution: 0.3, runUp: 20 },
   },
@@ -97,7 +104,8 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     name: 'Vulture',
     title: 'Finisher',
     color: '#5a6f7d',
-    variant: 'sedan',
+    variant: 'muscle',
+    look: { number: 4, kit: { plating: true, rust: 0.5 } },
     car: [{ stat: 'engineForce', mul: 1.1 }],
     style: { ...BASE, prey: 'weak', aggression: 0.55, caution: 0.4, chargeSpeed: 25, runUp: 32 },
   },
@@ -107,6 +115,7 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     title: 'Dodger',
     color: '#2f9fd8',
     variant: 'sedan',
+    look: { number: 7, kit: { rust: 0.2 } },
     car: [{ stat: 'gripAccel', mul: 1.15 }],
     style: { ...BASE, attack: 'spin', prey: 'weak', aggression: 0.2, caution: 1, temper: 0.05 },
   },
@@ -115,7 +124,8 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     name: 'Cockroach',
     title: 'Survivor',
     color: '#e8c547',
-    variant: 'pickup',
+    variant: 'wagon',
+    look: { number: 3, kit: { plating: true } },
     car: [{ stat: 'toughness', mul: 1.35 }, { stat: 'maxHealth', mul: 1.15 }],
     style: { ...BASE, prey: 'weak', aggression: 0.12, caution: 0.9, temper: 0.06, chargeSpeed: 20 },
   },
@@ -124,7 +134,8 @@ export const DERBY_RIVALS: DerbyProfile[] = [
     name: 'Bandit',
     title: 'Glory hunter',
     color: '#2b2f36',
-    variant: 'sedan',
+    variant: 'muscle',
+    look: { number: 77, kit: { spikes: true, rust: 0.25 } },
     car: [],
     style: { ...BASE, prey: 'player', aggression: 0.6, dirty: 0.3, chargeSpeed: 25 },
   },

@@ -108,7 +108,7 @@ export class Hud {
     this.hint = el(
       root,
       'position:absolute;right:16px;bottom:16px;max-width:min(340px,30vw);text-align:right;font-size:clamp(10px,2.4vw,14px);font-weight:700;transition:opacity 1.5s;',
-      `WASD / arrows: drive · Space: handbrake · Shift: boost · ${controls} · C: camera · Esc: menu · \`: tuning`,
+      `WASD / arrows: drive · Space: handbrake · Shift: boost · ${controls} · C: camera · +/− or wheel: zoom · Esc: menu · \`: tuning`,
     );
     setTimeout(() => { this.hint.style.opacity = '0'; }, HINT_SECONDS * 1000);
     // Bottom-right corner, one small line: the frame rate, then the map credit (if any).

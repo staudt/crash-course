@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAMERA_MODES, CameraRig, type CameraMode } from '../core/CameraRig';
+import { CAMERA_MODES, CameraRig, ZOOM_CONFIG, type CameraMode, type ZoomMode } from '../core/CameraRig';
 import { Input } from '../core/Input';
 import { Physics } from '../core/Physics';
 import { BoostFlame } from '../fx/BoostFlame';
@@ -13,7 +13,7 @@ import { Particles } from '../fx/Particles';
 import { TrackPath } from '../race/TrackPath';
 import { Hud } from '../ui/Hud';
 import { Car, type CarEvents, type SpawnPose, type SurfaceFn, type WallFn } from '../vehicle/Car';
-import { buildCarModel, type CarVariant } from '../vehicle/CarBuilder';
+import { buildCarModel, type CarLook, type CarVariant } from '../vehicle/CarBuilder';
 import { cloneStats, type CarStats } from '../vehicle/CarStats';
 import { ConcreteWall } from '../world/ArenaWall';
 import { BOWL_CONFIG, carveBowl } from '../world/Bowl';
@@ -77,6 +77,23 @@ function saveCameraMode(mode: CameraMode): void {
   }
 }
 
+const ZOOM_KEY = 'desert.camera.zoom';
+function loadZoom(): Partial<Record<ZoomMode, number>> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ZOOM_KEY) ?? '{}');
+    return typeof saved === 'object' && saved ? saved : {};
+  } catch {
+    return {};
+  }
+}
+function saveZoom(zoom: Record<ZoomMode, number>): void {
+  try {
+    localStorage.setItem(ZOOM_KEY, JSON.stringify(zoom));
+  } catch {
+    // Storage unavailable: the zoom lasts for this session only.
+  }
+}
+
 export class Game {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -122,6 +139,7 @@ export class Game {
 
     this.rig = new CameraRig(container.clientWidth / container.clientHeight);
     this.rig.setMode(loadCameraMode());
+    this.rig.setZoom(loadZoom());
     this.env = new Environment(this.scene, this.renderer);
     // The level shapes the ground before the terrain is built from it.
     const race = level.kind === 'race';
@@ -215,10 +233,10 @@ export class Game {
     this.frameListeners.push(fn);
   }
 
-  spawnCar(color: string, variant: CarVariant, pose: SpawnPose, stats: CarStats = cloneStats()): Car {
+  spawnCar(color: string, variant: CarVariant, pose: SpawnPose, stats: CarStats = cloneStats(), look: CarLook = {}): Car {
     const ground = this.terrain.heightAt(pose.position.x, pose.position.z);
     const p = { position: { x: pose.position.x, y: ground + 1.3, z: pose.position.z }, yaw: pose.yaw };
-    const car = new Car(this.physics, buildCarModel({ color, variant }), stats, p, this.carEvents);
+    const car = new Car(this.physics, buildCarModel({ color, variant, ...look }), stats, p, this.carEvents);
     car.surface = this.surface;
     car.paving = this.paving;
     car.walls = this.walls;
@@ -244,7 +262,7 @@ export class Game {
       pose ??= { position: { x: t.x, y: t.y, z: t.z }, yaw: Math.atan2(f.x, f.z) };
       this.removeCar(this.player);
     }
-    this.player = this.spawnCar(GAME_CONFIG.playerColor, 'sedan', pose ?? { position: { x: 0, y: 0, z: 0 }, yaw: 0 }, this.playerStats);
+    this.player = this.spawnCar(GAME_CONFIG.playerColor, 'sedan', pose ?? { position: { x: 0, y: 0, z: 0 }, yaw: 0 }, this.playerStats, { number: 1 });
   }
 
   private frame(): void {
@@ -253,7 +271,7 @@ export class Game {
     this.lastTime = now;
     this.hud.tickFps(now);
 
-    this.handleActions();
+    this.handleActions(dt);
     this.input.read(this.player.input);
     this.director.beforePhysics(dt);
 
@@ -295,7 +313,7 @@ export class Game {
     this.input.endFrame();
   }
 
-  private handleActions(): void {
+  private handleActions(dt: number): void {
     // Esc: back to the level menu (it opens on load, on the level picked last).
     if (this.input.consume('Escape')) location.reload();
     this.director.handleActions(this.input);
@@ -305,6 +323,13 @@ export class Game {
       this.snapCamera();
       saveCameraMode(mode);
       this.director.notify(CAMERA_NAMES[mode], '#ffffff');
+    }
+    // Zoom (chase and overhead views): +/- held, or the mouse wheel (scroll toward you = farther out).
+    const keys = (this.input.held('Minus', 'NumpadSubtract') ? 1 : 0) - (this.input.held('Equal', 'NumpadAdd') ? 1 : 0);
+    const notches = this.input.takeWheel();
+    if (keys !== 0 || notches !== 0) {
+      const factor = Math.exp(keys * ZOOM_CONFIG.keyRate * dt) * ZOOM_CONFIG.wheelStep ** notches;
+      if (this.rig.zoomBy(factor)) saveZoom(this.rig.zoom);
     }
   }
 
