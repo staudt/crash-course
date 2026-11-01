@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { WallBlock } from '../world/TrackWalls';
+import { TRACK_WALL_CONFIG, type WallBlock } from '../world/TrackWalls';
 import type { CityData, Deck } from './City';
 import { hexToLinear } from './CityGround';
 import { inPolygons, OSM_CONFIG, segmentDistance } from './osm';
@@ -245,7 +245,8 @@ export class River {
       // Road surface (up) and underside (down), quad by quad.
       for (let i = 0; i + 1 < left.length; i++) {
         const quad = [[left[i]!, left[i + 1]!, right[i + 1]!, right[i]!]];
-        flatPolygons([quad], d.y, true, top);
+        // The route's road and sidewalks are drawn by the track and CityGround.
+        if (!deck.route) flatPolygons([quad], d.y, true, top);
         flatPolygons([quad], d.y - d.depth, false, steel);
       }
       verticalStrip(left, false, d.y, d.y - d.depth, true, steel);
@@ -259,7 +260,8 @@ export class River {
         verticalStrip(b, false, d.y - d.depth, d.y - d.depth - d.girder, false, steel);
         flatPolygons(a.slice(1).map((p, i) => [[a[i]!, p, b[i + 1]!, b[i]!]]), d.y - d.depth - d.girder, false, steel);
       }
-      for (const k of [1, -1]) {
+      // The route's own bridges: its walls are the balustrades.
+      for (const k of deck.route ? [] : [1, -1]) {
         const edge = offsetLine(deck.line, (h - CFG.railing.inset) * k);
         edge.slice(1).forEach((p, i) => rails.push({ a: edge[i]!, b: p }));
         for (const p of placesAlong(edge, CFG.railing.posts, 0)) posts.push(p);
@@ -377,7 +379,7 @@ export class Balustrade {
     if (blocks.length === 0) return;
     const b = CFG.balustrade;
     const mat = new THREE.MeshLambertMaterial({ color: b.stone });
-    const plinths = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.3, 0.55).translate(0, 0.15, 0), mat, blocks.length);
+    const plinths = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.3, TRACK_WALL_CONFIG.thickness).translate(0, 0.15, 0), mat, blocks.length);
     const caps = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.16, 0.45).translate(0, b.height - 0.08, 0), mat, blocks.length);
     const count = blocks.reduce((n, k) => n + Math.max(1, Math.round(k.length / b.baluster)), 0);
     const h = b.height - 0.46;

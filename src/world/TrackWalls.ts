@@ -181,8 +181,15 @@ export function corridorLaterals(path: TrackPath, corridor: readonly [number, nu
       const into = (out + n - 1) % n;
       const a = enter(into);
       const b = enter(out);
-      // Inside: into the block behind both lines. Outside: the first line reached (ignoring one we're already behind).
-      const d = bend.turn * side > 0 ? Math.max(a, b) : Math.min(a || Infinity, b || Infinity);
+      // Inside: into the block behind both lines, but no further than the block's corner (a ray running nearly
+      // along one line, with the building line further out than the bend's radius, met it 200 m away and the wall
+      // cut back across the road). Outside: the first line reached (ignoring one we're already behind).
+      const inside = bend.turn * side > 0;
+      let d = inside ? Math.max(a, b) : Math.min(a || Infinity, b || Infinity);
+      if (inside) {
+        const c = blockCorner(lines[into]![k]!, lines[out]![k]!);
+        if (c) d = Math.min(d, Math.hypot(c.x - p.x, c.z - p.z));
+      }
       if (Number.isFinite(d) && d > 0) return d;
     }
     // On a straight: the last bend that started before s (none yet: the first straight, corner 0 → 1).
@@ -191,6 +198,16 @@ export function corridorLaterals(path: TrackPath, corridor: readonly [number, nu
     const d = enter(straight);
     return Number.isFinite(d) && d > 0 ? d : corridor[straight]![k]! + thickness / 2;
   };
+}
+
+/** Where two wall lines (a point and the normal into the wall) cross, or null if they're parallel. */
+function blockCorner(a: { x: number; z: number; nx: number; nz: number }, b: { x: number; z: number; nx: number; nz: number }): { x: number; z: number } | null {
+  // Each line: n · q = n · point.
+  const ca = a.nx * a.x + a.nz * a.z;
+  const cb = b.nx * b.x + b.nz * b.z;
+  const det = a.nx * b.nz - a.nz * b.nx;
+  if (Math.abs(det) < 1e-6) return null;
+  return { x: (ca * b.nz - cb * a.nz) / det, z: (a.nx * cb - b.nx * ca) / det };
 }
 
 /** Signed curvature averaged over ± `window` m around each sample (circular box filter, 2 passes). */

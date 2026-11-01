@@ -130,19 +130,21 @@ export function streetCircuit(t: ChicagoTrack, base: Omit<TrackDef, 'corners' | 
 }
 
 /**
- * "Chicago Loop": downtown Chicago, clockwise round real streets (OpenStreetMap data): south down LaSalle toward
- * the Board of Trade, west on Jackson past Willis Tower, north up Wacker along the river's south branch, round
- * the 333 W Wacker bend, east on Wacker along the main branch and the Riverwalk. The building line is the wall:
- * sidewalks are drivable, side streets are barricaded, the river side is a balustrade over the drop.
+ * "Chicago Loop": downtown Chicago round the river's main branch (OpenStreetMap data), anticlockwise: from the
+ * Lake Street bridge over the south branch onto Wacker, along the river and the Riverwalk to Michigan Avenue,
+ * north over the Michigan Avenue bridge, west on Hubbard, a block south on State, west on Kinzie over the north
+ * branch, south on Clinton back to Lake. The building line is the wall: sidewalks are drivable, side streets are
+ * barricaded, the river side is a balustrade over the drop.
  */
 export const CHICAGO: TrackDef = streetCircuit(
   chicagoTrack as ChicagoTrack,
-  { id: 'chicago', name: 'Chicago Loop', surface: 'asphalt', stations: [0, 3], laps: 3, parked: 0, guide: 'bends' },
+  { id: 'chicago', name: 'Chicago Loop', surface: 'asphalt', stations: [0, 4], laps: 3, parked: 0, guide: 'bends' },
   [
-    [1, 0.5], // Jackson
-    [2, 0.33], // Wacker, south branch
-    [2, 0.67],
-    [4, 0.5], // Wacker, main branch
-    [0, 0.4], // north LaSalle
+    [2, 0.5], // Wacker, main branch
+    [5, 0.5], // the Michigan Avenue bridge
+    [6, 0.5], // Hubbard
+    [8, 0.33], // Kinzie
+    [8, 0.67],
+    [9, 0.5], // Clinton
   ],
 );

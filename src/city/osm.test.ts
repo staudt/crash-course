@@ -1,9 +1,20 @@
 import polygonClipping from 'polygon-clipping';
 import { describe, expect, it } from 'vitest';
-import { CHICAGO_ROUTE, clipRing, convertChicago, decodeRing, encodeRing, inPolygons, parseLength, projector, ringArea, simplifyRing, type OverpassElement, type Route } from './osm';
+import { clipRing, convertChicago, decodeRing, encodeRing, inPolygons, parseLength, projector, ringArea, simplifyRing, type OverpassElement, type Route } from './osm';
 
-const project = projector(CHICAGO_ROUTE.origin);
-const [lat0, lon0] = CHICAGO_ROUTE.origin;
+const ROUTE: Route = {
+  // The old Loop route's centre and bounds (the toy streets sit where the real ones are).
+  bbox: [41.87, -87.645, 41.8947, -87.6214],
+  origin: [41.8823, -87.6332],
+  streets: [
+    { label: 'LaSalle Street', name: /\bLa ?Salle\b/i, from: [41.8866, -87.6324], to: [41.8781, -87.6322] },
+    { label: 'Jackson Boulevard', name: /\bJackson\b/i, from: [41.8781, -87.6322], to: [41.8781, -87.634] },
+    { label: 'Wells Street', name: /\bWells\b/i, from: [41.8781, -87.634], to: [41.8866, -87.6341] },
+    { label: 'Wacker Drive', name: /\bWacker\b/i, from: [41.8866, -87.6341], to: [41.8866, -87.6324] },
+  ],
+};
+const project = projector(ROUTE.origin);
+const [lat0, lon0] = ROUTE.origin;
 const unit = project(lat0 + 0.001, lon0 + 0.001);
 /** Metres (x east, z south) → lat/lon, inverting the projection. */
 const ll = (x: number, z: number) => ({ lat: lat0 - (z / -unit.z) * 0.001, lon: lon0 + (x / unit.x) * 0.001 });
@@ -23,15 +34,6 @@ const box = (x0: number, x1: number, z0: number, z1: number, tags: Record<string
 // Madison crossing at z 0. Building lines 12 m off every street, 14 m on the outside of LaSalle and Wells, and the
 // river 22 m north of Wacker, 200 m wide, with the Riverwalk (and a kiosk) on its far bank and Wells crossing it
 // on a bascule bridge. Lower Wacker runs under Wacker and must be ignored.
-const ROUTE: Route = {
-  ...CHICAGO_ROUTE,
-  streets: [
-    { label: 'LaSalle Street', name: /\bLa ?Salle\b/i, from: [41.8866, -87.6324], to: [41.8781, -87.6322] },
-    { label: 'Jackson Boulevard', name: /\bJackson\b/i, from: [41.8781, -87.6322], to: [41.8781, -87.634] },
-    { label: 'Wells Street', name: /\bWells\b/i, from: [41.8781, -87.634], to: [41.8866, -87.6341] },
-    { label: 'Wacker Drive', name: /\bWacker\b/i, from: [41.8866, -87.6341], to: [41.8866, -87.6324] },
-  ],
-};
 const fixture = {
   osm3s: { timestamp_osm_base: '2026-10-01T00:00:00Z' },
   elements: [
@@ -44,7 +46,7 @@ const fixture = {
     way({ highway: 'primary', name: 'West Wacker Drive' }, [[-200, -478], [200, -478]]),
     way({ highway: 'primary', name: 'Lower West Wacker Drive', layer: '-1' }, [[-200, -470], [200, -470]]),
     way({ highway: 'secondary', name: 'West Madison Street', lanes: '4' }, [[-200, 0], [200, 0]]),
-    way({ highway: 'footway', name: 'Riverwalk' }, [[-200, -490], [200, -490]]),
+    way({ highway: 'footway' }, [[-200, -490], [200, -490]]),
     // Inside the loop, split by Madison.
     box(-54, 63, -466, -6),
     box(-54, 63, 6, 454),

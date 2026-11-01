@@ -3,29 +3,38 @@
  * No imports, so node can load this file directly (type stripping).
  *
  * World axes: x = metres east, z = metres south (north is -z, which keeps the map unmirrored seen from above
- * in three.js), centred on CHICAGO_ROUTE.origin. The route is clockwise: south on LaSalle, west on Jackson,
- * north on Wacker along the river's south branch, round the 333 W Wacker bend, east on Wacker along the main branch.
+ * in three.js), centred on CHICAGO_ROUTE.origin. The route runs anticlockwise round the river's main branch:
+ * east over the south branch on Lake, Wacker along the river to Michigan, back west on Hubbard and Kinzie,
+ * south on Clinton.
  *
  * Polygon booleans (the river cut) come in as `PolygonOps` (polygon-clipping, passed by the script and the tests),
  * so this module stays import-free and out of the game bundle's dependencies.
  */
 
 export const CHICAGO_ROUTE: Route = {
-  /** Overpass bbox: south, west, north, east (the route plus ~900 m). */
-  bbox: [41.87, -87.645, 41.8947, -87.6214] as [number, number, number, number],
+  /** Overpass bbox: south, west, north, east (the route plus ~600 m). */
+  bbox: [41.88032, -87.64862, 41.89553, -87.61682],
   /** Projection origin (lat, lon): the middle of the route. */
-  origin: [41.8823, -87.6332] as [number, number],
+  origin: [41.88793, -87.63272],
   /**
    * The streets in driving order, each with a rough seed segment (lat, lon from → to) used to pick the
    * street's nodes; the street lines are then fitted to them. Street i runs from corner i to corner i + 1.
-   * Wacker is three straights: up the south branch, the diagonal at 333 W Wacker, along the main branch.
+   * Lake Street east over the south branch; Wacker as four straights along the river (the diagonal at
+   * 333 W Wacker, the main branch, the bend north-east past State, the last stretch to Michigan); north over
+   * the river on Michigan; west on Hubbard; a block south on State; west on Kinzie over the north branch;
+   * south on Clinton back to Lake.
    */
   streets: [
-    { label: 'LaSalle Street', name: /\bLa ?Salle\b/i, from: [41.8866, -87.6324], to: [41.8781, -87.6322] },
-    { label: 'Jackson Boulevard', name: /\bJackson\b/i, from: [41.8781, -87.6322], to: [41.87808, -87.63687] },
-    { label: 'Wacker Drive', name: /\bWacker\b/i, from: [41.87808, -87.63687], to: [41.88565, -87.63685], reach: 10 },
-    { label: 'Wacker Drive', name: /\bWacker\b/i, from: [41.88628, -87.63643], to: [41.88671, -87.63571], width: 15, reach: 0, cornerMax: 90 },
-    { label: 'Wacker Drive', name: /\bWacker\b/i, from: [41.88688, -87.63489], to: [41.8866, -87.6324], reach: 10, cornerMax: 90 },
+    { label: 'Lake Street', name: /\bLake Street\b/i, from: [41.88572, -87.64103], to: [41.88573, -87.6385], cornerMax: 30 },
+    { label: 'Wacker Drive', name: /\bWacker Drive\b/i, from: [41.88628, -87.63643], to: [41.88671, -87.63571], width: 15, reach: 0, cornerMax: 25 },
+    { label: 'Wacker Drive', name: /\bWacker Drive\b/i, from: [41.88688, -87.63489], to: [41.88688, -87.6279], reach: 10, cornerMax: 90 },
+    { label: 'Wacker Drive', name: /\bWacker Drive\b/i, from: [41.88721, -87.62651], to: [41.8879, -87.62583], width: 15, reach: 0 },
+    { label: 'Wacker Drive', name: /\bWacker Drive\b/i, from: [41.88808, -87.62549], to: [41.88824, -87.62471], width: 12, reach: 0 },
+    { label: 'Michigan Avenue', name: /\bMichigan Avenue\b/i, from: [41.88806, -87.62447], to: [41.89004, -87.62414] },
+    { label: 'Hubbard Street', name: /\bHubbard\b/i, from: [41.89011, -87.62428], to: [41.89006, -87.6279] },
+    { label: 'State Street', name: /\bState Street\b/i, from: [41.88997, -87.62802], to: [41.88935, -87.62801], reach: 10 },
+    { label: 'Kinzie Street', name: /\bKinzie\b/i, from: [41.88926, -87.62814], to: [41.88907, -87.64127] },
+    { label: 'Clinton Street', name: /\bClinton\b/i, from: [41.88896, -87.64138], to: [41.88586, -87.64134], reach: 10 },
   ] as RouteStreet[],
 };
 
@@ -70,8 +79,8 @@ export const OSM_CONFIG = {
   cornerMin: 10,
   cornerMax: 25,
   cornerClear: 1.5,
-  /** The start/finish line sits this far (m) before the LaSalle × Jackson junction's centre. */
-  startBefore: 150,
+  /** The start/finish line sits this far (m) before corner 1 (Lake × Wacker): on the Lake Street bridge. */
+  startBefore: 40,
   /** Building heights (m): per level, and with no height tagged. */
   levelHeight: 3.8,
   defaultHeight: 24,
@@ -101,6 +110,8 @@ export const OSM_CONFIG = {
   deckMin: 5,
   deckMax: 24,
   deckOverhang: 2,
+  /** The route's own bridges reach this far (m) past the building lines (the walls' backs, and their bulge near a bend). */
+  routeDeckMargin: 1.6,
   /** Footprint simplification (m): near the route (within `nearRoute` m) and further out; small far buildings are dropped. */
   nearRoute: 250,
   simplifyNear: 0.5,
@@ -135,7 +146,7 @@ export interface ChicagoTrack {
   /** Per straight: centreline → building line (m) on its [left, right]. */
   corridor: [number, number][];
   halfWidth: number;
-  /** The start/finish line sits this far (m) before corner 1 (LaSalle × Jackson). */
+  /** The start/finish line sits this far (m) before corner 1. */
   startBefore: number;
   /** The street names, per straight. */
   streets: string[];
@@ -175,6 +186,8 @@ export interface EncodedDeck {
   /** A bascule bridge: where along the centreline (m) it leaves and reaches the bank (its bridge houses). */
   h?: [number, number];
   n?: string;
+  /** The route's own bridge: wall to wall, the corridor walls are its balustrades (no railings of its own). */
+  route?: boolean;
 }
 
 /** The heavy part (buildings and decoration), loaded with the level. */
@@ -557,12 +570,23 @@ export function convertChicago(raw: OverpassResponse, ops: PolygonOps, route: Ro
   const clipped = water.map((r) => clipRing(r, sw.x, ne.x, ne.z, sw.z)).filter((r) => r.length >= 3);
   water.length = 0;
   water.push(...clipped);
+  const unionAll = (list: Polygon[]): MultiPolygon => (list.length === 0 ? [] : ops.union(list[0]!, ...list.slice(1)));
+  const box: Polygon = [closed([{ x: sw.x + 1, z: ne.z + 1 }, { x: ne.x - 1, z: ne.z + 1 }, { x: ne.x - 1, z: sw.z - 1 }, { x: sw.x + 1, z: sw.z - 1 }])];
+  const riverRings = rawWater.filter((r) => Math.abs(ringArea(r)) >= cfg.riverArea);
+  const river = riverRings.length > 0 ? ops.intersection(unionAll(riverRings.map((r) => [closed(r)])), box) : [];
+  const walkLines = roads
+    .filter((e) => /riverwalk/i.test(e.tags!['name'] ?? '') && /^(footway|pedestrian|path|cycleway)$/.test(e.tags!['highway']!) && !e.tags!['bridge'] && !(parseFloat(e.tags!['layer'] ?? '0') || 0))
+    .map((e) => pts(e.geometry))
+    .filter((l) => l.length >= 2);
+  const zone = unionAll([...river, ...walkLines.flatMap((l) => bandPieces(l, cfg.walkReach))]);
   const edges: [P, P][] = [];
   for (const f of shown) {
     if (f.bottom >= cfg.overhang) continue;
     f.ring.forEach((p, i) => edges.push([p, f.ring[(i + 1) % f.ring.length]!]));
   }
   for (const r of water) r.forEach((p, i) => edges.push([p, r[(i + 1) % r.length]!]));
+  // The drop to the Riverwalk is a street edge too (the water alone left 30 m plazas on Wacker's river side).
+  for (const poly of zone) for (const r of poly) for (let i = 0; i + 1 < r.length; i++) edges.push([{ x: r[i]![0], z: r[i]![1] }, { x: r[i + 1]![0], z: r[i + 1]![1] }]);
   const near = (o: P, ux: number, uz: number): number => {
     let best = Infinity;
     for (const [a, b] of edges) {
@@ -609,15 +633,6 @@ export function convertChicago(raw: OverpassResponse, ops: PolygonOps, route: Ro
   // The river cut: the river and the Riverwalk beside it sit below the street. It is the river plus a band round
   // the Riverwalk's paths, less the route's corridor (each straight's strip out to its building lines, carried
   // across the junctions) and the buildings standing in it; kiosks out on the walk itself go down with it.
-  const unionAll = (list: Polygon[]): MultiPolygon => (list.length === 0 ? [] : ops.union(list[0]!, ...list.slice(1)));
-  const box: Polygon = [closed([{ x: sw.x + 1, z: ne.z + 1 }, { x: ne.x - 1, z: ne.z + 1 }, { x: ne.x - 1, z: sw.z - 1 }, { x: sw.x + 1, z: sw.z - 1 }])];
-  const riverRings = rawWater.filter((r) => Math.abs(ringArea(r)) >= cfg.riverArea);
-  const river = riverRings.length > 0 ? ops.intersection(unionAll(riverRings.map((r) => [closed(r)])), box) : [];
-  const walkLines = roads
-    .filter((e) => /riverwalk/i.test(e.tags!['name'] ?? '') && /^(footway|pedestrian|path|cycleway)$/.test(e.tags!['highway']!) && !e.tags!['bridge'] && !(parseFloat(e.tags!['layer'] ?? '0') || 0))
-    .map((e) => pts(e.geometry))
-    .filter((l) => l.length >= 2);
-  const zone = unionAll([...river, ...walkLines.flatMap((l) => bandPieces(l, cfg.walkReach))]);
   const zoneBoxes = zone.map((poly) => bounds(poly[0]!.map(([x, z]) => ({ x, z }))));
   const strips: Polygon[] = junctions.map((a, i) => {
     const b = junctions[(i + 1) % n]!;
@@ -644,7 +659,38 @@ export function convertChicago(raw: OverpassResponse, ops: PolygonOps, route: Ro
     if (area <= cfg.kioskArea && inZone / area >= cfg.kioskShare && inRiver < 1) kiosks.add(f);
     else solid.push(foot);
   }
-  const cutP = cleanPolygons(toPolygons(zone.length > 0 ? ops.difference(ops.intersection(zone, box), ...strips, ...solid) : []));
+  // Where the route itself crosses the river (Lake, Michigan, Kinzie), its strip stays open over the water: the
+  // road is a bridge deck there. `spans`: per straight, the stretches (m from its first junction) over the river.
+  const riverP = toPolygons(river);
+  const spans = junctions.map((a, i) => {
+    const b = junctions[(i + 1) % n]!;
+    const len = Math.hypot(b.x - a.x, b.z - a.z);
+    const out: [number, number][] = [];
+    let from = -1;
+    for (let u = 0; u <= len; u += 1) {
+      const wet = inPolygons(riverP, a.x + dirs[i]!.x * u, a.z + dirs[i]!.z * u);
+      if (wet && from < 0) from = u;
+      if ((!wet || u + 1 > len) && from >= 0) {
+        if (u - from >= 10) out.push([from, wet ? len : u]);
+        from = -1;
+      }
+    }
+    return out;
+  });
+  const openStrips = strips.flatMap((strip, i) => {
+    if (spans[i]!.length === 0) return [strip];
+    const d = dirs[i]!;
+    const a = junctions[i]!;
+    const r = Math.max(...corridor[i]!) + cfg.cutMargin + 1;
+    const gaps: Polygon[] = spans[i]!.map(([u0, u1]) => {
+      const p0 = { x: a.x + d.x * u0, z: a.z + d.z * u0 };
+      const p1 = { x: a.x + d.x * u1, z: a.z + d.z * u1 };
+      return [closed([{ x: p0.x + d.z * r, z: p0.z - d.x * r }, { x: p1.x + d.z * r, z: p1.z - d.x * r }, { x: p1.x - d.z * r, z: p1.z + d.x * r }, { x: p0.x - d.z * r, z: p0.z + d.x * r }])];
+    });
+    return ops.difference(strip, ...gaps);
+  });
+  const stripP = toPolygons(strips.flatMap((st) => [st]));
+  const cutP = cleanPolygons(toPolygons(zone.length > 0 ? ops.difference(ops.intersection(zone, box), ...openStrips, ...solid) : []));
   const cut = cutP.map((poly) => poly.map(closed));
   const waterP = river.length > 0 && cut.length > 0 ? cleanPolygons(toPolygons(ops.intersection(river, cut))) : [];
   const walkP = cut.length > 0 ? cleanPolygons(toPolygons(river.length > 0 ? ops.difference(cut, river) : cut)) : [];
@@ -662,11 +708,15 @@ export function convertChicago(raw: OverpassResponse, ops: PolygonOps, route: Ro
     if (/^(footway|cycleway|path|steps|pedestrian|corridor|elevator|platform|proposed|bridleway|track)$/.test(hw) || t['tunnel'] === 'yes' || t['area'] === 'yes') continue;
     // A bridge closed for rebuilding still stands (Lake Street's); other construction doesn't.
     if (hw === 'construction' && !(t['bridge'] && t['name'])) continue;
-    if ((parseFloat(t['layer'] ?? '0') || 0) < 0) continue;
+    // Upper levels only (Lower Michigan, Lower Wacker).
+    if ((parseFloat(t['layer'] ?? '0') || 0) < 0 || (parseFloat(t['level'] ?? '0') || 0) < 0 || /\blower\b/i.test(t['name'] ?? '')) continue;
     const lanes = parseFloat(t['lanes'] ?? '');
     const width = Math.min(cfg.deckMax, Math.max(cfg.deckMin, parseLength(t['width']) || (Number.isFinite(lanes) ? lanes * 3.3 + 2 : hw === 'service' ? 5 : 10)));
     const bascule = t['bridge'] === 'movable' || !!t['bridge:movable'];
     for (const run of runsInside(densify(pts(w.geometry), 2), cutP, 3)) {
+      // The route's own bridges get one deck wall to wall (below), not the street's lanes.
+      const mid = run[Math.floor(run.length / 2)]!;
+      if (inPolygons(stripP, mid.x, mid.z)) continue;
       const line = extendLine(run, cfg.deckOverhang);
       const deck: EncodedDeck = { p: encodeRing(simplifyLine(line, 0.2)), w: round(width) };
       if (bascule) {
@@ -686,6 +736,19 @@ export function convertChicago(raw: OverpassResponse, ops: PolygonOps, route: Ro
       decks.push(deck);
     }
   }
+  // The route's bridges: wall to wall across its corridor (the walls are the bridge's balustrades), no railings.
+  spans.forEach((list, i) => {
+    const a = junctions[i]!;
+    const d = dirs[i]!;
+    const [l, r] = corridor[i]!;
+    const shift = (l - r) / 2;
+    for (const [u0, u1] of list) {
+      const at = (u: number): P => ({ x: a.x + d.x * u + d.z * shift, z: a.z + d.z * u - d.x * shift });
+      const deck: EncodedDeck = { p: encodeRing([at(u0 - cfg.deckOverhang), at(u1 + cfg.deckOverhang)]), w: round(l + r + cfg.routeDeckMargin * 2), route: true, n: route.streets[i]!.label };
+      if (u1 - u0 >= 15) deck.h = [cfg.deckOverhang, round(u1 - u0 + cfg.deckOverhang)];
+      decks.push(deck);
+    }
+  });
   const paths = walkLines.flatMap((l) => runsInside(densify(l, 2), walkP, 4)).map((l) => encodeRing(simplifyLine(l, 0.3)));
 
   // Side streets: drivable ways crossing a wall line (each straight's building lines, between the junctions' corners).
@@ -775,9 +838,11 @@ export function inPolygons(polys: readonly (readonly (readonly P[])[])[], x: num
   return polys.some((poly) => pointInRing(x, z, poly[0]!) && !poly.slice(1).some((hole) => pointInRing(x, z, hole)));
 }
 
+/** A closed ring for the polygon booleans, snapped to the centimetre (near-coincident float edges crash polygon-clipping's sweep). */
 function closed(ring: readonly P[]): Pair[] {
-  const out: Pair[] = ring.map((p) => [p.x, p.z]);
-  out.push([ring[0]!.x, ring[0]!.z]);
+  const snap = (v: number) => Math.round(v * 100) / 100;
+  const out: Pair[] = ring.map((p) => [snap(p.x), snap(p.z)]);
+  out.push(out[0]!);
   return out;
 }
 

@@ -40,6 +40,8 @@ export interface Deck {
   /** A bascule bridge: along the line (m), where it leaves and reaches the banks (its bridge houses). */
   houses?: [number, number];
   name?: string;
+  /** The route's own bridge (the corridor walls are its balustrades). */
+  route?: boolean;
 }
 
 export interface CityData {
@@ -65,7 +67,7 @@ export function decodeCity(file: ChicagoCity): CityData {
     walk: polys(file.walk),
     water: polys(file.water),
     pools: file.pools.map(decodeRing),
-    decks: file.decks.map((d) => ({ line: decodeRing(d.p), width: d.w, houses: d.h, name: d.n })),
+    decks: file.decks.map((d) => ({ line: decodeRing(d.p), width: d.w, houses: d.h, name: d.n, route: d.route })),
     paths: file.paths.map(decodeRing),
     attribution: file.attribution,
   };

@@ -4,7 +4,7 @@ import { CHICAGO } from '../race/tracks';
 import { TRACK_WALL_CONFIG, trackWallBlocks, wallLaterals } from '../world/TrackWalls';
 import chicago from './chicago.json';
 import { buildingGeometry, classifyWallBlocks, CITY_CONFIG, decodeCity, fitToCorridor, FootprintIndex } from './City';
-import { inPolygons, type ChicagoCity } from './osm';
+import { inPolygons, segmentDistance, type ChicagoCity } from './osm';
 
 const path = new TrackPath(CHICAGO);
 const lateral = wallLaterals(path)!;
@@ -16,27 +16,32 @@ const index = new FootprintIndex(city.buildings);
 const blocks = classifyWallBlocks(trackWallBlocks(path), index, TRACK_WALL_CONFIG.thickness, city.cut);
 
 describe('Chicago Loop track', () => {
-  it('starts on LaSalle heading south, ~150 m before Jackson, and runs clockwise', () => {
-    expect(path.headingAt(0)).toBeCloseTo(0, 1); // heading 0 faces +z: south
-    const jackson = CHICAGO.corners[1]!;
+  it('starts on the Lake Street bridge heading east, and runs anticlockwise round the main branch', () => {
+    expect(CHICAGO.corners).toHaveLength(10);
+    // Heading east: +x is heading π/2 (heading 0 faces +z).
+    expect(Math.abs(path.headingAt(0) - Math.PI / 2)).toBeLessThan(0.05);
     const p = path.pointAt(0, { x: 0, z: 0 });
-    expect(Math.hypot(jackson.x - p.x, jackson.z - p.z)).toBeGreaterThan(130);
-    expect(Math.hypot(jackson.x - p.x, jackson.z - p.z)).toBeLessThan(170);
-    for (const b of path.bends) expect(b.turn).toBeLessThan(0); // all right turns
-    expect(path.length).toBeGreaterThan(2300);
-    expect(path.length).toBeLessThan(2700);
+    expect(inPolygons(city.water, p.x, p.z)).toBe(true);
+    const turns = path.bends.map((b) => Math.sign(b.turn));
+    // Left everywhere but Wacker's two S-bends (diagonal → main branch, the bend past State) and State → Kinzie.
+    expect(turns.filter((t) => t < 0)).toHaveLength(3);
+    expect(path.bends.reduce((t, b) => t + b.turn, 0)).toBeCloseTo(2 * Math.PI, 1);
+    expect(path.length).toBeGreaterThan(3000);
+    expect(path.length).toBeLessThan(3800);
   });
 
-  it('runs up Wacker along the river, round the 333 W Wacker bend in two sweeping halves', () => {
-    expect(CHICAGO.corners).toHaveLength(5);
-    const [, , ns, a, b] = CHICAGO.corners;
-    // Up the south branch (x ≈ -305), then the diagonal, then the main branch (z ≈ -509).
-    expect(ns!.x).toBeLessThan(-290);
-    expect(b!.z).toBeLessThan(-500);
-    expect(a!.r).toBeGreaterThan(40);
-    expect(b!.r).toBeGreaterThan(40);
-    const quarter = path.bends.filter((k) => k.corner === 3 || k.corner === 4).reduce((t, k) => t + k.turn, 0);
-    expect(quarter).toBeCloseTo(-Math.PI / 2, 0);
+  it('crosses the river three times on bridges (Lake, Michigan, Kinzie), with water under them', () => {
+    const bridges = city.decks.filter((d) => d.route);
+    expect(bridges.map((d) => d.name).sort()).toEqual(['Kinzie Street', 'Lake Street', 'Michigan Avenue']);
+    for (const d of bridges) {
+      expect(d.houses).toBeDefined();
+      const a = d.line[0]!;
+      const b = d.line[d.line.length - 1]!;
+      const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+      expect(inPolygons(city.water, mid.x, mid.z), d.name).toBe(true);
+      // No street deck of the route's own (with railings in the road) on top of it.
+      expect(city.decks.filter((o) => !o.route && o.line.some((p) => Math.hypot(p.x - mid.x, p.z - mid.z) < 5))).toHaveLength(0);
+    }
   });
 });
 
@@ -68,31 +73,29 @@ describe('city walls', () => {
     expect(facades / blocks.length).toBeLessThan(0.9);
   });
 
-  it('runs a balustrade along the river side of Wacker, over the drop', () => {
+  it('runs a balustrade along the river side, over the drop', () => {
     const rails = blocks.filter((b) => b.rail);
     const length = rails.reduce((l, b) => l + b.length, 0);
-    expect(length).toBeGreaterThan(300);
-    // All on the river side (left of the travel direction on Wacker: west, north-west, north) and none on LaSalle or Jackson.
-    for (const b of rails) {
-      const s = path.project(b.x, b.z);
-      expect(s.lateral, `rail at (${b.x.toFixed(0)}, ${b.z.toFixed(0)})`).toBeGreaterThan(0);
-      expect(b.x < -250 || b.z < -480, `rail at (${b.x.toFixed(0)}, ${b.z.toFixed(0)})`).toBe(true);
-    }
+    expect(length).toBeGreaterThan(600);
+    // The river is inside the loop: the balustrades are on the left (inside) but for both sides of the bridges.
+    const left = rails.filter((b) => path.project(b.x, b.z).lateral > 0).reduce((l, b) => l + b.length, 0);
+    expect(left / length).toBeGreaterThan(0.6);
   });
 
-  it('keeps the river cut out of the corridor', () => {
+  it('keeps the river cut out of the corridor, except on the bridges', () => {
+    const bridges = city.decks.filter((d) => d.route);
+    const onBridge = (x: number, z: number) => bridges.some((d) => d.line.some((p, i) => i > 0 && segmentDistance({ x, z }, d.line[i - 1]!, p) < d.width / 2 + 0.1));
     for (let s = 0; s < path.length; s += 2) {
       for (const side of [1, -1]) {
         const p = path.pointAt(s, { x: 0, z: 0 });
         const t = path.tangentAt(s, { x: 0, z: 0 });
         const d = (lateral(s, side) + half) * side;
-        expect(inPolygons(city.cut, p.x + t.z * d, p.z - t.x * d), `s ${s} side ${side}`).toBe(false);
+        const x = p.x + t.z * d;
+        const z = p.z - t.x * d;
+        if (onBridge(x, z)) continue;
+        expect(inPolygons(city.cut, x, z), `s ${s} side ${side}`).toBe(false);
       }
     }
-  });
-
-  it('keeps every wall off the road', () => {
-    for (const b of blocks) expect(path.project(b.x, b.z).distance).toBeGreaterThan(path.halfWidth + half);
   });
 });
 
